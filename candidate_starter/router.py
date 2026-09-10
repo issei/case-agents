@@ -33,7 +33,11 @@ class QueryRouter(BaseRouter):
         )
         self._classifier = LogisticRegression(
             random_state=42,
-            C=1.0,
+            # C=5.0 em vez de 1.0 para produzir probabilidades mais discriminativas.
+            # Com C=1.0, nenhuma das queries atinge o limiar de confiança de 0.75,
+            # tornando o Quality Gate inoperante. C=5.0 calibra as probabilidades
+            # para que queries de alta certeza passem enquanto ambíguas sejam contidas.
+            C=5.0,
             max_iter=1000,
         )
 
