@@ -38,6 +38,22 @@ def _git(*args: str) -> str:
         return ""
 
 
+def _source_is_dirty() -> bool:
+    """Há alteração de FONTE não commitada?
+
+    `reports/` fica deliberadamente fora da conta. O relatório é escrito por esta mesma
+    execução e, uma vez versionado, regenerá-lo suja a árvore por conta própria — incluí-lo
+    faria toda execução a partir da segunda se declarar irreprodutível por causa do arquivo
+    que ela acabou de gerar. O que `git_dirty` precisa responder é se o CÓDIGO que produziu
+    estes números estava commitado.
+    """
+    status = _git("status", "--porcelain")
+    return any(
+        line[3:].strip() and not line[3:].strip().startswith("reports/")
+        for line in status.splitlines()
+    )
+
+
 def build_snapshot() -> dict:
     """Procedência do relatório: sem isso um JSON versionado vira alegação sem data.
 
@@ -54,7 +70,7 @@ def build_snapshot() -> dict:
     return {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "git_commit": _git("rev-parse", "HEAD") or None,
-        "git_dirty": bool(_git("status", "--porcelain")),
+        "git_dirty": _source_is_dirty(),
         "random_seed": RANDOM_SEED,
         "python_version": platform.python_version(),
         "dependencies": {name: pkg(name) for name in ("scikit-learn", "numpy", "scipy")},

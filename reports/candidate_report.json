@@ -37,14 +37,14 @@
   "quality_gate_reasons": [],
   "smart_pipeline": {
     "total_cost_usd": 0.20003499999999982,
-    "total_latency_ms": 262.763999751769
+    "total_latency_ms": 163.81589963566512
   },
   "baseline_always_llm": {
     "total_cost_usd": 0.9000000000000006,
-    "total_latency_ms": 2742.101900279522
+    "total_latency_ms": 2745.926199830137
   },
   "cost_savings_pct": 77.77388888888892,
-  "latency_savings_pct": 90.41742395769525,
+  "latency_savings_pct": 94.03422059756016,
   "economics": {
     "resolved_smart_cost_usd": 0.20003499999999982,
     "resolved_baseline_cost_usd": 0.9000000000000006,
@@ -533,8 +533,8 @@
     }
   ],
   "snapshot": {
-    "generated_at_utc": "2026-09-10T04:38:35+00:00",
-    "git_commit": "c8f30d2dddd056ad76e5fedb97c1fea950f10b01",
+    "generated_at_utc": "2026-09-10T05:34:24+00:00",
+    "git_commit": "068bbe5b22e6ff11aaf9b871781a4f9ed47d8597",
     "git_dirty": true,
     "random_seed": 42,
     "python_version": "3.12.0",

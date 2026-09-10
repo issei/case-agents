@@ -56,22 +56,48 @@ def test_report_declares_its_provenance(report):
 
 
 def test_report_matches_the_current_commit_when_the_tree_is_clean():
-    """Árvore limpa e relatório de outro commit = número publicado desatualizado."""
+    """Árvore limpa e relatório de outro estado de código = número publicado desatualizado.
+
+    Ordem de release que este teste cobra:
+
+        1. commitar o código;
+        2. `python -m candidate_starter.run_case`  -> snapshot com git_dirty=false;
+        3. commitar `reports/candidate_report.json`.
+
+    O passo 3 cria um commit NOVO. Logo o relatório nunca aponta para o HEAD atual — ele
+    aponta para o commit do código que o produziu, que é um a menos. Comparar por
+    igualdade de commit seria uma asserção impossível de satisfazer. A propriedade
+    auditável é outra: entre o commit que gerou o relatório e o HEAD, nada fora de
+    `reports/` pode ter mudado.
+    """
+    from candidate_starter.run_case import _source_is_dirty
+
     if not REPORT_PATH.exists():
         pytest.skip("relatório ainda não gerado")
-    head = _git("rev-parse", "HEAD")
-    if head is None:
+    if _git("rev-parse", "HEAD") is None:
         pytest.skip("git indisponível")
-    if _git("status", "--porcelain"):
-        pytest.skip("árvore suja: o snapshot não tem como corresponder a um commit")
+    # Mesma noção de "sujo" usada ao gerar o snapshot: `reports/` não conta. Um relatório
+    # recém-gerado e ainda não commitado DEVE ser verificado, não ignorado.
+    if _source_is_dirty():
+        pytest.skip("fonte não commitada: o snapshot não tem como corresponder a um commit")
 
     snapshot = json.loads(REPORT_PATH.read_text(encoding="utf-8"))["snapshot"]
     assert snapshot["git_dirty"] is False, (
-        "relatório gerado sobre alterações não commitadas foi versionado como se fosse "
-        "um snapshot reprodutível"
+        "relatório gerado sobre alterações não commitadas foi versionado como se fosse um "
+        "snapshot reprodutível. Commite o código primeiro, depois rode "
+        "`python -m candidate_starter.run_case` e só então versione o relatório."
     )
-    assert snapshot["git_commit"] == head, (
-        f"relatório gerado em {snapshot['git_commit']}, HEAD está em {head}. "
+
+    if not snapshot.get("git_commit"):
+        pytest.skip("relatório gerado fora de um repositório git")
+    changed = _git("diff", "--name-only", snapshot["git_commit"], "HEAD")
+    if changed is None:
+        pytest.skip(f"commit {snapshot['git_commit'][:8]} não existe neste clone")
+
+    stale = sorted(f for f in changed.splitlines() if f and not f.startswith("reports/"))
+    assert not stale, (
+        f"o relatório foi gerado em {snapshot['git_commit'][:8]} e desde então mudaram "
+        f"arquivos fora de reports/: {stale}. "
         f"Regenere com `python -m candidate_starter.run_case`."
     )
 
