@@ -58,7 +58,7 @@ Plano de implementação estruturado de acordo com a especificação técnica (`
   - [x] Validação do schema do relatório JSON conforme Seção 3.4 da especificação
 
 - [x] **7. Execução completa do `pytest` com 100% de aprovação**
-  - [x] Executar `pytest candidate_starter/tests -v` cobrindo todos os testes de sanidade e unitários com 100% de sucesso (23/23 testes)
+  - [x] Executar `pytest candidate_starter/tests -v` cobrindo todos os testes de sanidade e unitários com 100% de sucesso (54/54 testes após ADR-006 e ADR-007)
   - [x] Executar `python -m candidate_starter.run_case` validando a execução fim a fim e gerando o relatório final
 
 - [x] **8. Elaboração dos Registros de Decisões de Arquitetura (ADRs)**
@@ -80,3 +80,61 @@ Plano de implementação estruturado de acordo com a especificação técnica (`
   - [x] Criar `run_demo.bat` para ambiente Windows (ativa `.venv`, valida sanidade dos testes, executa `run_case.py` e exibe o relatório gerado de forma limpa)
   - [x] Criar `run_demo.sh` para ambientes Linux/macOS equivalente
   - [x] Documentar instruções de execução rápida no `README.md` (demo em 1 clique)
+
+---
+
+## Iteração de Continuidade (pós-`fc830dc`)
+
+Origem: reavaliação do commit `fc830dc`, que media Hit Rate@2 de 35%, 7 execuções com tool
+incorreta e status REPROVADO PARA PRODUÇÃO. Resultado desta iteração: Hit Rate@2 de 100%,
+zero execuções incorretas, status APROVADO. Detalhamento em
+[ADR-006](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md) e
+[ADR-007](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md).
+
+- [x] **11. Diagnóstico do catálogo antes de qualquer alteração de código**
+  - [x] Inventariar as 285 tools e confirmar que todo `expected_tool` do dataset existe no catálogo
+  - [x] Identificar as duplicatas semânticas (8 ferramentas realizam "obter fatura atual"; 6 abrem chamado para app travando)
+  - [x] Medir a origem real da perda: nomes hiperespecíficos vencem a canônica por casamento literal, não por falha de vetorização
+  - [x] Medir por que o enriquecimento por concatenação falhou (norma L2 do TF-IDF dilui os termos originais)
+
+- [x] **12. Taxonomia canônica de capacidades (`taxonomy.py`)**
+  - [x] Substituir `CANONICAL_ALIASES` plano por `CANONICAL_INTENTS` com `aliases` + `variants`
+  - [x] Declarar 12 capacidades e as 34 ferramentas operacionais que as realizam
+  - [x] Reescrever o glossário como vocabulário de domínio, removendo frases copiadas do `eval_dataset.json`
+  - [x] Manter `CANONICAL_ALIASES` e `VARIANT_TO_CANONICAL` como índices derivados
+  - [x] Separar leitura de escrita: `consultar_email_vinculado_conta` NÃO é variante de `atualizar_email`
+
+- [x] **13. Recuperação em nível de capacidade (`retrieval.py`)**
+  - [x] Colapsar variantes na canônica pelo maior score do grupo
+  - [x] Indexar o glossário como campo separado (`score = 0.5 · lexical + 0.5 · intent`)
+  - [x] Adicionar `ToolMatch.matched_variant` como trilha de auditoria (campo opcional, contrato retrocompatível)
+  - [x] Corrigir furo de segurança: stopwords PT-BR (query sem sentido atravessava o limiar de abstenção com 0.132)
+  - [x] Corrigir furo de tokenização: `"e-mail"` → `"e mail"` → `"e"` removido como conjunção
+  - [x] Preservar `common/normalization.py` intacta (contrato fixo da Seção 3.2)
+
+- [x] **14. Calibração de probabilidade do router (`router.py`)**
+  - [x] Diagnosticar: 100% de acurácia com 9 de 20 queries `AGENT` abaixo do limiar de 0.75
+  - [x] Substituir o ajuste de `C=5.0` por `CalibratedClassifierCV(method="sigmoid")` e restaurar `C=1.0`
+  - [x] Rejeitar calibração isotônica (sobreajusta com 53 amostras — satura a confiança)
+  - [x] Derivar o número de folds da classe minoritária, para não quebrar testes com 4 amostras
+
+- [x] **15. Terceiro guarda e Quality Gate (`harness.py`)**
+  - [x] `AMBIGUOUS_CONFIRMATION` quando `(s1 - s2) / s1 < MIN_RELATIVE_MARGIN`
+  - [x] Renomear métrica para `retrieval_hit_rate_at_1` / `_at_k`, mantendo `precision_at_k` por compatibilidade
+  - [x] Adicionar `coverage_rate` e `ambiguous_confirmations`
+  - [x] `INDETERMINADO` quando o benchmark não contém queries transacionais
+  - [x] Separar economia total de `cost_savings_pct_on_resolved` e expor `deferred_to_human`
+
+- [x] **16. Testes de barreira, integridade e generalização**
+  - [x] `test_taxonomy.py`: invariantes de autoria (existência no catálogo, ausência de colisão, leitura ≠ escrita)
+  - [x] `test_taxonomy.py`: 12 paráfrases fora do dataset oficial como evidência contra ajuste ao gabarito
+  - [x] `test_harness_guards.py`: prova de que `mock_tool_execution` nunca é chamada com os guardas reprovando
+  - [x] `test_harness_guards.py`: critérios de aceite do benchmark oficial e reprodutibilidade das decisões
+  - [x] Suíte completa: 54 testes, 100% de aprovação
+
+- [x] **17. Correção da documentação**
+  - [x] Remover a alegação não verificada de "Recall@2 ~85%" do docstring do retriever
+  - [x] Atualizar README com os números efetivamente observados e a tabela de evolução
+  - [x] Substituir a seção de diagnóstico por "Limitações Conhecidas e Riscos Remanescentes"
+  - [x] Atualizar as bases de conhecimento OKF que citavam 15% / 85% como estado corrente
+  - [x] Registrar ADR-006 e ADR-007

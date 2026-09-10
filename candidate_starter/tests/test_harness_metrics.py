@@ -2,8 +2,6 @@
 import pytest
 
 from candidate_starter.harness import (
-    ROUTER_CONFIDENCE_THRESHOLD,
-    TASK_SUCCESS_RATE_THRESHOLD,
     compute_precision_at_k,
     compute_router_metrics,
     compute_savings,
@@ -93,10 +91,16 @@ def test_quality_gate_fails_on_both():
     assert len(qg["quality_gate_reasons"]) == 2
 
 
-def test_quality_gate_none_task_success_rate():
-    """task_success_rate=None (sem queries com expected_tool) não reprova por taxa de sucesso."""
+def test_quality_gate_none_task_success_rate_is_indeterminate():
+    """Benchmark sem queries transacionais é INDETERMINADO, nunca aprovado.
+
+    Ausência de evidência não é evidência de segurança: um benchmark que não exercitou
+    nenhuma execução de ferramenta não pode aprovar um pipeline bancário.
+    """
     qg = _evaluate_quality_gate(task_success_rate=None, incorrect_executions=0)
-    assert qg["production_approved"] is True
+    assert qg["production_approved"] is False
+    assert "INDETERMINADO" in qg["operational_status"]
+    assert any("transacion" in r.lower() for r in qg["quality_gate_reasons"])
 
 
 # ── Harness End-to-End ────────────────────────────────────────────────────────

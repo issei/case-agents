@@ -3,6 +3,7 @@ import pytest
 
 from candidate_starter.retrieval import ToolRetriever
 from candidate_starter.taxonomy import CANONICAL_ALIASES
+from common.data_loader import load_tools
 from common.schemas import Tool
 
 
@@ -109,27 +110,36 @@ def test_taxonomy_module_has_canonical_aliases():
         assert len(CANONICAL_ALIASES[intent].strip()) > 0, f"Aliases vazios para '{intent}'"
 
 
-def test_taxonomy_enrichment_improves_recall():
-    """Com use_taxonomy=True, o retriever encontra a tool canônica via vocabulário do usuário."""
-    tools = [
-        Tool(name="bloquear_cartao", description="Bloqueia cartão de crédito", category="cartoes"),
-        Tool(name="consultar_saldo", description="Consulta saldo da conta", category="conta"),
-        Tool(name="enviar_pix", description="Transferência via Pix", category="pix"),
-    ]
-    # Sem taxonomia: "perdi meu cartão" não encontra "bloquear_cartao" com score alto
+def test_taxonomy_fixes_ranking_that_lexical_alone_gets_wrong():
+    """Contraste medido no catálogo real: a taxonomia corrige o ranking, não o score.
+
+    Sem taxonomia, a variante hiperespecífica vence porque o nome dela repete as palavras
+    da query. Com a taxonomia, o grupo colapsa e a capacidade canônica assume o top-1,
+    com a variante que casou preservada em `matched_variant` para auditoria.
+    """
+    tools = load_tools()
     r_plain = ToolRetriever(use_taxonomy=False).fit(tools)
     r_tax = ToolRetriever(use_taxonomy=True).fit(tools)
 
-    res_plain = r_plain.search("perdi meu cartao na rua", k=1)
-    res_tax = r_tax.search("perdi meu cartao na rua", k=1)
+    query = "Manda o pdf da minha fatura atual"
 
-    # Com taxonomia, a tool canônica deve estar em top-1
-    assert res_tax.matches[0].name == "bloquear_cartao"
-    # E o score com taxonomia deve ser maior que sem taxonomia
-    score_tax = res_tax.matches[0].score if res_tax.matches else 0.0
-    score_plain = res_plain.matches[0].score if res_plain.matches else 0.0
-    assert score_tax > score_plain, (
-        "Taxonomia deve elevar o score da tool canônica para queries com vocabulário coloquial"
+    assert r_plain.search(query, k=1).matches[0].name == "enviar_pdf_fatura_atual"
+
+    top = r_tax.search(query, k=1).matches[0]
+    assert top.name == "consultar_fatura"
+    assert top.matched_variant == "enviar_pdf_fatura_atual"
+
+
+def test_capability_collapse_deduplicates_top_k():
+    """top-k devolve k capacidades DISTINTAS, não k duplicatas da mesma capacidade."""
+    from candidate_starter.taxonomy import VARIANT_TO_CANONICAL
+
+    r = ToolRetriever(use_taxonomy=True).fit(load_tools())
+    names = [m.name for m in r.search("Me envia a linha digitável da fatura", k=3).matches]
+
+    assert len(names) == len(set(names))
+    assert not (set(names) & set(VARIANT_TO_CANONICAL)), (
+        "Nenhuma variante pode aparecer no resultado: o ranking opera sobre capacidades."
     )
 
 

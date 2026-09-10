@@ -95,7 +95,7 @@ flowchart LR
     R[1. Refinamento<br/>Diagnóstico & Gotchas] --> S[2. Especificação<br/>Contratos & Invariantes]
     S --> P[3. Planejamento<br/>ADRs & Roadmap]
     P --> E[4. Execução<br/>Código Enxuto & Modular]
-    E --> T[5. Testes<br/>23 Testes & Benchmark]
+    E --> T[5. Testes<br/>54 Testes & Benchmark]
 ```
 
 ### 1. Refinamento (Discovery & Diagnóstico dos Gotchas)
@@ -113,7 +113,7 @@ Todas as regras de negócio, limites arquiteturais e critérios de aceite foram 
 ### 3. Planejamento (ADRs & Arquitetura Modular)
 Para garantir clareza nas decisões técnicas e permitir escalabilidade do MVP para a produção corporativa (M0 a M3 do modelo ISM), as escolhas foram formalizadas em **Architecture Decision Records (ADRs)** em [`docs/adr/`](docs/adr/):
 - **[ADR-001](docs/adr/0001-normalizacao-textual-canonica.md)**: Normalização textual canônica via decomposição Unicode NFKD + remoção de acentos + sanitização regex.
-- **[ADR-002](docs/adr/0002-classificador-lexical-query-routing.md)**: Classificador supervisionado TF-IDF + Regressão Logística para roteamento com calibração probabilística nativa via `predict_proba`.
+- **[ADR-002](docs/adr/0002-classificador-lexical-query-routing.md)**: Classificador supervisionado TF-IDF + Regressão Logística para roteamento, com confiança extraída de `predict_proba` — refinado pela ADR-007, que substitui a probabilidade bruta por Platt scaling out-of-fold.
 - **[ADR-003](docs/adr/0003-ranking-deterministico-tool-retrieval.md)**: Ranking por Similaridade de Cosseno com critério de desempate alfabético por nome.
 - **[ADR-004](docs/adr/0004-harness-avaliacao-metricas-economia.md)**: Harness de avaliação em 5 camadas com cálculo de Acurácia, Matriz de Confusão 2x2, Precision@K e economia de custo/latência com proteção contra divisão por zero.
 - **[ADR-005](docs/adr/0005-alinhamento-apm-e-omniroute-gateway.md)**: Alinhamento da arquitetura com o padrão OmniRoute Gateway e governança empresarial.
@@ -124,17 +124,21 @@ A implementação em `candidate_starter/` seguiu rigorosamente os princípios de
 | Componente | Arquivo | Decisão Técnica e Implementação |
 |---|---|---|
 | **Normalizador** | [`common/normalization.py`](common/normalization.py) | Função pura `normalize(text)` compartilhada: Unicode NFKD, remoção de diacríticos, minúsculas, remoção de caracteres não-alfanuméricos e colapso de espaços. |
-| **Router** | [`candidate_starter/router.py`](candidate_starter/router.py) | Pipeline `TfidfVectorizer` + `LogisticRegression`. Extração da confiança via `max(predict_proba)`. Medição de latência precisa via `time.perf_counter()`. |
-| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Vetorização com n-grams (1, 2) sobre `name + description + category` já normalizados. Matriz de similaridade de cosseno ordenada por score decrescente e desempate estável por `name`. Suporte a limiar mínimo (`min_score`) para abstention. |
-| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Computação determinística de métricas: Acurácia, Matriz de Confusão completa, Precision@K (Hit Rate), proteção contra divisão por zero e contabilidade de abstention e taxa de sucesso de execução. |
+| **Router** | [`candidate_starter/router.py`](candidate_starter/router.py) | `TfidfVectorizer` + `LogisticRegression` envolvida em `CalibratedClassifierCV(method="sigmoid")`, para que `confidence` seja uma estimativa de acerto e não uma margem encolhida pela regularização (ADR-007). Latência via `time.perf_counter()`. |
+| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Recuperação multi-campo: cosseno TF-IDF sobre `name + description + category` combinado ao glossário de domínio como campo separado (`0.5 · lexical + 0.5 · intent`). Duplicatas semânticas do catálogo colapsam na capacidade canônica (ADR-006). Desempate estável por `name`; `min_score` para abstention. |
+| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Três guardas pré-execução (confiança do router, score mínimo, margem entre candidatos) e métricas determinísticas: acurácia, matriz de confusão, Hit Rate@1/@k, cobertura, abstenção e Quality Gate com estado `INDETERMINADO`. |
+| **Taxonomia** | [`candidate_starter/taxonomy.py`](candidate_starter/taxonomy.py) | Governança do catálogo: 12 capacidades canônicas, seu glossário de vocabulário PT-BR e as 34 ferramentas operacionais que as realizam. Invariantes de autoria verificadas por testes (ADR-006). |
 | **Orquestrador** | [`candidate_starter/run_case.py`](candidate_starter/run_case.py) | Script de execução de ponta a ponta que lê as fontes de dados, treina os componentes, avalia sobre o dataset de teste e serializa o relatório JSON formatado. |
 
 ### 5. Testes & Verificação Contínua
-Foi construída uma bateria de **23 testes unitários** em [`candidate_starter/tests/`](candidate_starter/tests/), alcançando **100% de aprovação**:
+Foi construída uma bateria de **54 testes** em [`candidate_starter/tests/`](candidate_starter/tests/), alcançando **100% de aprovação**:
 - **Testes de Sanidade Obrigatórios**: Validação dos contratos do Router e do Retriever com dados de exemplo.
 - **Testes de Invariantes de Normalização**: Comprovação de que `"Cartão"`, `"cartao"` e `"CARTÃO"` retornam exatamente as mesmas ferramentas com os mesmos scores.
 - **Testes de Casos de Borda e Erro**: Lançamento de `RuntimeError` para predições antes do `fit()`, rejeição de listas vazias, verificação de paridade de tamanho, tratamento de strings vazias ou compostas apenas por espaços.
-- **Testes de Resiliência do Harness**: Validação de matrizes de confusão sem dados, divisões por zero em baseline nulo e precision@k em listas vazias.
+- **Testes de Resiliência do Harness**: Validação de matrizes de confusão sem dados, divisões por zero em baseline nulo e hit rate em listas vazias.
+- **Testes de Barreira de Segurança**: Prova de que `mock_tool_execution` **nunca** é chamada quando a confiança está abaixo do limiar, quando nenhum candidato passa do `min_score` ou quando a margem entre top-1 e top-2 é insuficiente. São testes de ausência de efeito — é o que separa "recuperou mal" de "executou a operação errada na conta".
+- **Testes de Integridade da Taxonomia**: Toda capacidade e toda variante existem no catálogo; nenhuma ferramenta pertence a duas capacidades; leitura e escrita nunca são agrupadas.
+- **Teste de Generalização fora do Dataset**: 12 paráfrases com vocabulário ausente do `eval_dataset.json`, para detectar ajuste ao gabarito (medido: 9/12 em top-1, 11/12 em top-2).
 
 ---
 
@@ -174,67 +178,173 @@ python -m candidate_starter.run_case
 
 ## 📊 Resultados do Benchmark (Relatório de Avaliação)
 
-Execução realizada sobre o dataset de avaliação oficial com 30 consultas (`data/eval_dataset.json`):
+Execução reproduzida sobre o dataset de avaliação oficial de 30 consultas
+(`data/eval_dataset.json`), com 285 ferramentas em catálogo. Os números abaixo são a saída
+literal de `python -m candidate_starter.run_case` — não são estimativas.
 
 ```
-============================================================
-              EVALUATION REPORT - CASE AGENTS
-============================================================
-Router Accuracy: 100.0% (30/30)
-
-Confusion Matrix:
-  FAST_PATH -> FAST_PATH: 10
-  FAST_PATH -> AGENT: 0
-  AGENT -> FAST_PATH: 0
-  AGENT -> AGENT: 20
-
-Retriever Precision@2: 15.0%
-
-Cost:
-  Smart Pipeline: $0.20003
-  Baseline (Always LLM): $0.90000
-  Cost Savings: 77.8%
-
-Latency:
-  Smart Pipeline: 136.0 ms
-  Baseline (Always LLM): 2747.6 ms
-  Latency Savings: 95.0%
-============================================================
+====================================================================
+HARNESS DE AVALIAÇÃO - Router & Tool Retrieval
+====================================================================
+Queries avaliadas: 30
+Acurácia do Router: 100.0%
+Matriz de confusão: {'FAST_PATH': {'FAST_PATH': 10, 'AGENT': 0}, 'AGENT': {'FAST_PATH': 0, 'AGENT': 20}}
+Hit Rate@1 do Retriever: 95.0%
+Hit Rate@2 do Retriever: 100.0%
+Taxa de Execução Correta (Top-1 executado): 95.0%
+Cobertura transacional (executou algo): 95.0%
+--------------------------------------------------------------------
+Execuções corretas          : 19
+Execuções incorretas (risco): 0
+Abstenções (total)          : 1
+  - fallback humano (confiança baixa): 0
+  - confirmação por ambiguidade      : 1
+Taxa de execução incorreta  : 0.0%
+Taxa de abstenção           : 5.0%
+--------------------------------------------------------------------
+Custo pipeline inteligente: $0.19003
+Custo baseline (tudo pro LLM): $0.90000
+Economia de custo (total): 78.9%
+Economia de custo (só queries resolvidas): 78.2%
+  ATENÇÃO: 1 queries foram desviadas para humano. Esse custo não está modelado e não é economia.
+Latência pipeline inteligente: 146.7 ms
+Latência baseline: 2660.0 ms
+Economia de latência: 94.5%
+====================================================================
+[OK]  STATUS OPERACIONAL: APROVADO PARA PRODUÇÃO
+====================================================================
 ```
 
-| Dimensão Avaliada | Pipeline Inteligente (Nossa Solução) | Baseline (Sempre LLM) | Ganho / Impacto |
-|---|---|---|---|
-| **Acurácia do Router** | **100.0%** (30/30) | N/A | Classificação perfeita entre rota local e agente |
-| **Falsos Positivos** | **0** (`FAST_PATH` -> `AGENT`) | N/A | Nenhuma saudação/FAQ enviada erroneamente ao LLM |
-| **Custo Total por Rodada** | **$0.20003** | **$0.90000** | **77.8% de economia financeira direta** |
-| **Latência Média por Consulta**| **136.0 ms** | **2.747,6 ms** | **95.0% de redução no tempo de espera do cliente** |
-| **Precision@2 no Catálogo** | **15.0%** | N/A | Redução de 285 tools para 2 candidatas por intenção |
+*A latência é medida com `time.perf_counter()` sobre mocks com `sleep` aleatório
+(`common/mock_llm.py`); ela varia alguns pontos percentuais entre execuções. Todas as demais
+métricas são determinísticas — há teste dedicado de reprodutibilidade.*
 
-> O relatório estruturado completo está persistido em: [**`reports/candidate_report.json`**](reports/candidate_report.json).
+### Evolução medida
+
+| Métrica | Commit `fc830dc` | Estado atual | Origem da mudança |
+|---|---:|---:|---|
+| Testes | 35 | **54** | novos testes de taxonomia, guardas e benchmark |
+| Acurácia do router | 100% | **100%** | — |
+| Hit Rate@2 do retriever | 35% | **100%** | ADR-006 |
+| Hit Rate@1 do retriever | — | **95%** | ADR-006 |
+| Execução correta top-1 | 20% (4/20) | **95%** (19/20) | ADR-006 + ADR-007 |
+| **Execuções incorretas** | **7** | **0** | guarda de margem (ADR-007) |
+| Fallback por baixa confiança | 9 | **0** | calibração de probabilidade (ADR-007) |
+| Confirmação por ambiguidade | — | **1** | guarda de margem (ADR-007) |
+| Taxa de abstenção | 45% | **5%** | — |
+| Economia de custo | 87,8% | **78,9%** | **queda esperada — ver abaixo** |
+| Status operacional | REPROVADO | **APROVADO** | Quality Gate |
+
+> **A economia caiu e isso está correto.** Os 87,8% anteriores vinham de 9 abstenções que não
+> deveriam existir: o router acertava as 30 decisões, mas 9 ficavam abaixo do limiar de 0.75 por
+> subconfiança de calibração. Cada abstenção evitava uma chamada de LLM e inflava a economia
+> enquanto a taxa de sucesso era 20%. Cobrir 95% das queries transacionais custa mais dinheiro —
+> é o trade-off correto, e por isso o relatório passou a publicar `cost_savings_pct_on_resolved`
+> e `deferred_to_human` separadamente.
+
+### As três correções
+
+**1. O catálogo tem duplicatas semânticas — não era problema de vetorização**
+([ADR-006](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md))
+
+Oito ferramentas do catálogo realizam "obter a fatura atual"; seis abrem chamado de suporte para
+app travando. Os nomes hiperespecíficos (`enviar_pdf_fatura_atual`) repetem literalmente o
+vocabulário da query e vencem a capacidade canônica (`consultar_fatura`) — cuja descrição,
+*"Gera o PDF ou linha digitável da fatura do mês atual"*, justamente as subsome.
+
+A correção declara a governança do catálogo em `candidate_starter/taxonomy.py` e move a
+recuperação do nível de endpoint para o de **capacidade**: as variantes colapsam na canônica, com
+o membro que casou preservado em `ToolMatch.matched_variant` para auditoria. Como efeito
+colateral desejável, `search(q, k=2)` passa a devolver 2 capacidades **distintas** em vez de 2
+duplicatas da mesma.
+
+A tentativa anterior — concatenar aliases ao documento da ferramenta — falhava por razão
+mecânica: o TF-IDF normaliza por norma L2, então acrescentar 15 sinônimos ao documento **reduz**
+o peso relativo dos termos originais. O glossário agora é um **campo de recuperação separado**:
+`score = 0.5 · lexical + 0.5 · intent`, ambos cosseno em `[0,1]`.
+
+**2. O limiar de confiança rejeitava decisões corretas**
+([ADR-007](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md))
+
+O router acertava 30/30 e mesmo assim 9 das 20 queries transacionais caíam abaixo de 0.75. Um
+limiar que rejeita 45% das decisões corretas e nenhuma incorreta não compra segurança — destrói
+cobertura. A causa é subconfiança por regularização L2 sobre 53 exemplos de treino.
+
+A correção **não** foi afrouxar `C` até os números passarem (isso é mover a trave): foi aplicar
+Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv=5)`) e **restaurar `C=1.0`**, o
+padrão, para que `RouteResult.confidence` seja uma estimativa da probabilidade de acerto e o
+limiar de 0.75 signifique alguma coisa.
+
+**3. Top-1 era executado sem verificar se era decisão ou empate**
+([ADR-007](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md))
+
+Terceiro guarda: `(s1 - s2) / s1 < 0.25` → `AMBIGUOUS_CONFIRMATION`, sem execução. É exatamente
+o que salva a única query fora do top-1:
+
+```
+Query : "Quero mudar o e-mail vinculado à minha conta"
+Top-2 : consultar_email_vinculado_conta (0.423)  |  atualizar_email (0.361)
+Margem: 0.147 < 0.25  ->  AMBIGUOUS_CONFIRMATION (nenhuma tool executada)
+```
+
+Uma leitura e uma escrita empatadas sobre o mesmo dado. O sistema pede confirmação em vez de
+apostar. As 19 decisões corretas têm margem relativa entre 0.55 e 0.72 — o limiar não está
+espremido entre acerto e erro.
+
+> Relatório estruturado completo em [**`reports/candidate_report.json`**](reports/candidate_report.json).
 
 ---
 
-## 🔍 Diagnóstico Crítico do MVP & Lições para Produção Bancária
+## 🔍 Limitações Conhecidas e Riscos Remanescentes
 
-> **Nota de Transparência de Engenharia:** Este repositório entrega a implementação executável de um **MVP Baseline local** para o desafio. Os artefatos de governança empresarial ([`APM.yml`](APM.yml) e referências a OmniRoute Gateway) representam a **especificação arquitetural alvo para produção**, não serviços de infraestrutura ativos nesta pasta de exercícios.
+> **Nota de Transparência de Engenharia:** este repositório entrega um **MVP determinístico
+> executável**. Os artefatos de governança ([`APM.yml`](APM.yml), OmniRoute Gateway) são a
+> **especificação arquitetural alvo para produção**, não infraestrutura ativa nesta pasta.
 
-A execução do benchmark revelou três aprendizados essenciais que diferenciam um protótipo de um sistema financeiro real:
+**1. "Aprovado para produção" significa aprovado *neste* benchmark.** São 30 queries de avaliação
+e 53 exemplos de treino do router. Acurácia de 100% com esse volume diz pouco sobre tráfego real.
+O Quality Gate confirma que o pipeline satisfaz os critérios do exercício — não que esteja pronto
+para um banco.
 
-### 1. O Descompasso Taxonômico no Retrieval (15% Precision@2)
-O modelo TF-IDF alcançou 15% de precisão (3 acertos em 20 queries `AGENT`) não por falha de implementação matemática, mas por um **desalinhamento estrutural entre a taxonomia do dataset e o vocabulário do catálogo**:
-* O dataset espera ferramentas canônicas/genéricas: `bloquear_cartao`, `consultar_fatura`, `alterar_endereco`.
-* O catálogo de 285 tools possui ferramentas operacionais hiperespecíficas: `solicitar_bloqueio_preventivo_cartao`, `gerar_linha_digitavel_fatura`, `atualizar_cep_entrega`.
-* **Conclusão:** Abordagens puramente léxicas (TF-IDF/BM25) falham quando não há sobreposição vocabular direta. Para produção, a evolução necessária é:
-  1. **Tabela de Aliases & Metadados Hierárquicos** (mapeando intenções de alto nível para sub-tools);
-  2. **Retrieval Híbrido** (BM25 + Dense Embeddings semânticos);
-  3. **Reranker** contextual com score calibration.
+**2. Recuperação lexical tem teto em paráfrase.** O teste
+`tests/test_taxonomy.py::test_paraphrases_outside_dataset_generalize` avalia 12 queries escritas
+com vocabulário **ausente** do dataset oficial, justamente para detectar ajuste ao gabarito.
+Resultado medido: **9/12 em top-1, 11/12 em top-2**. O caso que falha —
+*"Fui morar em outro bairro, cadastra o novo lugar"* — usa palavras que não existem no catálogo
+nem no glossário. Nenhum ajuste de peso resolve isso: a resposta é recuperação densa (embeddings)
+com reranker, conforme a trilha de produção.
 
-### 2. O Risco da "Economia Cega" em Domínio Bancário
-O pipeline inteligente economizou **77.8% de custo** e **95% de latência**, mas essa economia é em parte **estrutural** (o benchmark premia o envio para o caminho barato).
-* **O Perigo:** Executar cegamente a primeira tool retornada (`top_k_names[0]`) quando o retrieval erra 85% das vezes causaria execuções indevidas graves em produção (ex.: registrar compra não reconhecida em vez de estornar transação).
-* **A Correção Implementada:** 
-  * **Abstention / Threshold de Relevância:** O retriever descarta candidatos com score nulo ou inferior a um limiar mínimo em vez de forçar um desempate alfabético enganoso.
-  * **Controle de Confiança:** Quando a confiança da rota ou o score da ferramenta for insuficiente, o pipeline registra necessidade de confirmação ou **transbordo para atendente humano (`HUMAN_FALLBACK`)**, impedindo execuções automáticas incorretas.
+**3. A taxonomia é mantida à mão.** 12 capacidades e 34 variantes. Escalar para milhares de
+ferramentas exige derivação assistida (clusterização de embeddings + revisão humana) e governança
+no ciclo de vida do registry. As invariantes automatizadas reduzem, mas não eliminam, esse custo.
+
+**4. `MIN_RELATIVE_MARGIN = 0.25` é global, mas o risco não é.** Bloquear um cartão por engano é
+reversível; transferir dinheiro não é. Em produção o limiar deveria ser por classe de risco da
+ferramenta, não único para o catálogo inteiro.
+
+**5. O custo do fallback humano não está modelado.** `economics.human_handling_cost_usd` é `null`
+de propósito. Enquanto ele não existir, comparar economia entre configurações com taxas de
+abstenção diferentes não é honesto.
+
+**6. Duas falhas de tokenização apareceram ao medir, não ao ler o código** — e ambas eram de
+segurança, não de recall:
+
+- Sem lista de stopwords PT-BR, a query sem sentido *"qual a capital da mongolia interior"*
+  pontuava **0.132** contra `gerar_linha_digitavel_fatura` (*"Gera **a** linha digitável **da**
+  fatura"*), **atravessando** o limiar de abstenção de 0.10 apoiada apenas em `"a"` e `"da"`.
+- `normalize()` converte `"e-mail"` em `"e mail"`; o `"e"` cai como conjunção e a query perde a
+  palavra inteira, zerando o score lexical de `atualizar_email`.
+
+`common/normalization.py` **não foi alterada** — é contrato fixo da Seção 3.2 da especificação.
+Ambas as correções vivem em `candidate_starter/retrieval.py`, aplicadas identicamente a índice e
+query, preservando a invariante de normalização única.
+
+### Fronteira entre produção e avaliação
+
+`expected_tool` é usado **exclusivamente** pela camada de avaliação offline, para rotular o
+resultado depois que a decisão já foi tomada. Os três guardas pré-execução usam apenas sinais
+disponíveis em runtime — confiança do router, score do retriever e margem entre candidatos.
+Nenhum deles consulta o gabarito.
 
 ---
 
@@ -254,6 +364,8 @@ As escolhas técnicas e seus respectivos trade-offs estão documentados em [`doc
 - [**ADR-003: Ranking Determinístico e Desempate Alfabético no Tool Retrieval**](docs/adr/0003-ranking-deterministico-tool-retrieval.md)
 - [**ADR-004: Harness de Avaliação em Camadas e Métricas de Economia**](docs/adr/0004-harness-avaliacao-metricas-economia.md)
 - [**ADR-005: Alinhamento com o Manifesto APM e OmniRoute Gateway Pattern**](docs/adr/0005-alinhamento-apm-e-omniroute-gateway.md)
+- [**ADR-006: Taxonomia de Capacidades, Colapso de Duplicatas e Recuperação Multi-Campo**](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md)
+- [**ADR-007: Calibração de Probabilidade do Router e Guarda de Margem**](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md)
 
 ### 3. Base de Conhecimento (OKF Agent Memory)
 Artigos conceituais no padrão **Open Knowledge Format (Google OKF v0.2)** em [`docs/knowledge/`](docs/knowledge/):

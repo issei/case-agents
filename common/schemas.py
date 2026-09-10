@@ -21,6 +21,11 @@ class RouteResult:
 class ToolMatch:
     name: str
     score: float
+    # Trilha de auditoria: quando o retriever recupera no nível de capacidade, `name` é a
+    # tool canônica e `matched_variant` é o membro do grupo que efetivamente casou com a
+    # query (ex.: name="consultar_fatura", matched_variant="enviar_pdf_fatura_atual").
+    # Campo opcional — o contrato anterior (name, score) permanece válido.
+    matched_variant: Optional[str] = None
 
 
 @dataclass

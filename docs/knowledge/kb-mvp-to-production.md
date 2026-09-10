@@ -13,7 +13,7 @@ A evolução do `case-agents` obedece aos quatro módulos do **Intentional Syste
 
 ### M0 · Despertar (Baseline vs Smart Pipeline)
 - O baseline sempre-LLM evidenciou desperdício de latência (2747ms vs 132ms) e custo ($0.90 vs $0.20), comprovando o valor de rotas determinísticas locais (`FAST_PATH`).
-- **Diagnóstico Empírico Crítico:** O benchmark revelou também que um retriever puramente léxico atinge apenas 15% de precisão no top-2 devido ao descompasso taxonômico entre o dataset e as 285 tools operacionais do catálogo, demonstrando que economia sintética sem precisão de negócio é um risco operacional.
+- **Diagnóstico Empírico Crítico:** um retriever puramente léxico atinge 15% de Hit Rate no top-2 sobre as 285 tools do catálogo, porque o catálogo contém duplicatas semânticas cujos nomes hiperespecíficos repetem o vocabulário da query. Declarar a governança de capacidades e recuperar nesse nível levou a métrica a 100% (ADR-006). A lição que permanece: **economia de custo sem taxa de sucesso é risco operacional disfarçado de eficiência** — os 87,8% de economia medidos em uma iteração intermediária vinham de abstenções indevidas, com apenas 20% de execuções corretas.
 
 ### M1 · Mapear (Inventário de Comportamentos)
 - Congelamento dos casos de teste e rotas esperadas em `eval_dataset.json` e catálogo de 285 tools em `tools_registry.json`.

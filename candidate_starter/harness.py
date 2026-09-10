@@ -1,17 +1,40 @@
 """Pilar 3 — Evaluation Harness (Evals & Benchmarking).
 
-A orquestração do pipeline (rodar o router, a seleção de tools e os mocks de LLM/tool) já
-está feita em `run_harness`. O que falta implementar são as MÉTRICAS do relatório final:
+O harness orquestra o pipeline (router -> seleção de tools -> mocks de LLM/tool) e produz
+o relatório de qualidade, custo, latência e segurança.
 
-  1. Acurácia do Router (+ matriz de confusão).
-  2. Precision@K do Retriever de Tools (a tool certa estava no Top-K?)
-     Nota metrológica: No contexto deste benchmark (uma única ferramenta relevante por query),
-     esta métrica equivale a Hit Rate / Recall@1-in-K.
-  3. Economia de custo e latência do pipeline "inteligente" vs baseline sempre-LLM.
-  4. Quality Gate de Segurança Bancária:
-     - Nenhuma tool é executada sem confiança de rota >= ROUTER_CONFIDENCE_THRESHOLD.
-     - Nenhuma tool é executada com score de retrieval abaixo de RETRIEVER_MIN_SCORE.
-     - O relatório classifica o pipeline como APROVADO ou REPROVADO PARA PRODUÇÃO.
+## Barreira de segurança pré-execução
+
+Nenhuma ferramenta é executada sem passar por três guardas, nesta ordem:
+
+  1. `ROUTER_CONFIDENCE_THRESHOLD` — confiança do router abaixo do limiar
+     -> HUMAN_FALLBACK_LOW_CONFIDENCE (o retriever nem chega a ser chamado).
+  2. `RETRIEVER_MIN_SCORE` — nenhum candidato acima do limiar de relevância
+     -> ABSTAIN_LOW_SCORE.
+  3. `MIN_RELATIVE_MARGIN` — top-1 e top-2 empatados dentro da margem
+     -> AMBIGUOUS_CONFIRMATION.
+
+Os três guardas usam apenas sinais disponíveis em runtime (confiança, score, margem).
+Nenhum deles consulta `expected_tool`.
+
+## Fronteira entre produção e avaliação
+
+`expected_tool` pertence EXCLUSIVAMENTE à camada de avaliação offline. Ele é usado depois
+que a decisão já foi tomada, apenas para rotular o resultado (SUCCESS /
+INCORRECT_TOOL_EXECUTED) e para calcular métricas. Em produção esse campo não existe — por
+isso a proteção precisa acontecer ANTES da execução, via guardas 1–3.
+
+## Métricas do relatório
+
+  1. Acurácia do router + matriz de confusão.
+  2. Hit Rate do retriever em top-1 e top-k.
+     Nota metrológica: com uma única capacidade relevante por query, esta métrica é
+     Hit Rate (Recall@1-in-K), não Precision@K clássica. O campo `precision_at_k` é
+     mantido por compatibilidade com o schema da Seção 3.4 da especificação.
+  3. Economia de custo/latência vs baseline sempre-LLM, separada entre total e
+     queries efetivamente resolvidas (economia obtida por abstenção não é ganho
+     operacional — é trabalho empurrado para o atendimento humano).
+  4. Quality Gate: APROVADO / REPROVADO / INDETERMINADO.
 """
 import time
 from typing import Dict, List, Optional
@@ -28,15 +51,21 @@ from common.mock_llm import (
 from common.schemas import Tool
 
 # ── Limites de Segurança Bancária ─────────────────────────────────────────────
-# Baseados na especificação da Seção 2 do APM.yml e no kb-trust-engineering.
-# Abaixo desses valores, a operação é desviada para HUMAN_FALLBACK / ABSTAIN.
+# Baseados na Seção 4 da especificação (limiar 0.75 para a rota AGENT) e no
+# kb-trust-engineering. Abaixo desses valores a operação é desviada, nunca executada.
 ROUTER_CONFIDENCE_THRESHOLD: float = 0.75
-"""Confiança mínima do router para encaminhar query ao caminho AGENT sem confirmação."""
+"""Confiança mínima do router para encaminhar a query ao caminho AGENT sem confirmação."""
 
 RETRIEVER_MIN_SCORE: float = 0.10
-"""Score mínimo de similaridade para considerar uma ferramenta como candidata válida.
-Ferramentas com score abaixo desse limiar são descartadas (abstention), pois indicam
-ausência de correspondência semântica razoável com a query do usuário.
+"""Score mínimo de relevância para considerar uma capacidade como candidata válida."""
+
+MIN_RELATIVE_MARGIN: float = 0.25
+"""Margem relativa mínima entre top-1 e top-2: (s1 - s2) / s1.
+
+Um top-1 que vence o top-2 por uma fração do próprio score não é uma decisão — é um
+empate. Em domínio bancário, empate entre uma capacidade de leitura e uma de escrita
+(ex.: consultar e-mail vs. alterar e-mail) precisa de confirmação do cliente, não de
+execução otimista. O valor é relativo, não absoluto, para não depender da escala do score.
 """
 
 TASK_SUCCESS_RATE_THRESHOLD: float = 0.80
@@ -46,6 +75,10 @@ INCORRECT_EXECUTION_TOLERANCE: int = 0
 """Número máximo de execuções incorretas permitidas em ambiente bancário.
 Qualquer execução com tool incorreta é tratada como incidente de segurança.
 """
+
+STATUS_APPROVED = "APROVADO PARA PRODUÇÃO"
+STATUS_REJECTED = "REPROVADO PARA PRODUÇÃO (Quality Gate Violado)"
+STATUS_INDETERMINATE = "INDETERMINADO (sem evidência transacional)"
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -70,10 +103,11 @@ def compute_router_metrics(y_true: List[str], y_pred: List[str], labels: List[st
 
 
 def compute_precision_at_k(hits: List[int]) -> float:
-    """Calcule Precision@K / Hit Rate a partir de uma lista de 0/1 (acertou ou não a tool).
+    """Calcule o Hit Rate a partir de uma lista de 0/1 (a capacidade certa estava no top-k?).
 
-    Nota metrológica: No contexto deste benchmark (uma única ferramenta relevante
-    esperada por query), esta métrica quantifica o Hit Rate (Recall@1-in-K).
+    Nota metrológica: com uma única capacidade relevante esperada por query, esta métrica
+    quantifica Hit Rate (Recall@1-in-K), não Precision@K clássica. O nome é mantido por
+    compatibilidade com o schema da Seção 3.4 da especificação.
     """
     if not hits:
         return 0.0
@@ -86,11 +120,11 @@ def compute_savings(
     baseline_cost_usd: float,
     baseline_latency_ms: float,
 ) -> Dict:
-    """Calcule a % de economia de custo e de latência do pipeline inteligente em
-    relação ao baseline (mandar tudo pro LLM caro).
+    """Calcule a % de economia de custo e de latência do pipeline inteligente vs baseline.
 
-    AVISO: Economia financeira só é uma virtude de engenharia quando combinada com
-    task_success_rate >= TASK_SUCCESS_RATE_THRESHOLD. Ver Quality Gate no relatório.
+    AVISO: economia financeira só é virtude de engenharia quando combinada com
+    task_success_rate >= TASK_SUCCESS_RATE_THRESHOLD. Economia obtida por abstenção
+    desloca custo para o atendimento humano — ver `economics` no relatório.
     """
     cost_savings_pct = (
         ((baseline_cost_usd - smart_cost_usd) / baseline_cost_usd) * 100.0
@@ -114,8 +148,12 @@ def _evaluate_quality_gate(
 ) -> Dict:
     """Avalia o Quality Gate de segurança bancária.
 
-    Retorna um dicionário com o status operacional, aprovação para produção
-    e as razões de reprovação, se houver.
+    Três estados possíveis:
+      - APROVADO: zero execuções incorretas e taxa de sucesso acima do limiar.
+      - REPROVADO: algum critério violado.
+      - INDETERMINADO: `task_success_rate` é None, ou seja, o benchmark não continha
+        nenhuma query transacional. Ausência de evidência não é evidência de segurança;
+        um benchmark sem cenário transacional NUNCA aprova um pipeline bancário.
     """
     reasons = []
 
@@ -125,24 +163,40 @@ def _evaluate_quality_gate(
             f"(tolerância zero em ambiente bancário)"
         )
 
-    if task_success_rate is not None and task_success_rate < TASK_SUCCESS_RATE_THRESHOLD:
+    if task_success_rate is None:
+        reasons.append(
+            "Benchmark sem queries transacionais: não há evidência de que o pipeline "
+            "execute a ferramenta correta. Aprovação exige cenário transacional."
+        )
+        return {
+            "operational_status": STATUS_INDETERMINATE,
+            "production_approved": False,
+            "quality_gate_reasons": reasons,
+        }
+
+    if task_success_rate < TASK_SUCCESS_RATE_THRESHOLD:
         reasons.append(
             f"Taxa de execução correta: {task_success_rate:.1%} "
             f"(mínimo exigido: {TASK_SUCCESS_RATE_THRESHOLD:.0%})"
         )
 
     production_approved = len(reasons) == 0
-
-    if production_approved:
-        status = "APROVADO PARA PRODUÇÃO"
-    else:
-        status = "REPROVADO PARA PRODUÇÃO (Quality Gate Violado)"
-
     return {
-        "operational_status": status,
+        "operational_status": STATUS_APPROVED if production_approved else STATUS_REJECTED,
         "production_approved": production_approved,
         "quality_gate_reasons": reasons,
     }
+
+
+def _relative_margin(scores: List[float]) -> Optional[float]:
+    """Margem relativa entre top-1 e top-2: (s1 - s2) / s1.
+
+    Retorna None quando há um único candidato (não há empate possível) ou quando o
+    score do top-1 é zero (nada a comparar — a guarda de min_score já tratou o caso).
+    """
+    if len(scores) < 2 or scores[0] <= 0:
+        return None
+    return (scores[0] - scores[1]) / scores[0]
 
 
 def run_harness(
@@ -154,33 +208,30 @@ def run_harness(
 ) -> dict:
     """Executa o harness de avaliação com barreira de segurança pré-execução.
 
-    Para cada query transacional (AGENT), aplica os seguintes guardas antes de
-    invocar qualquer execução de ferramenta:
-
-    1. Limiar de confiança do router (ROUTER_CONFIDENCE_THRESHOLD):
-       Se confidence < threshold → HUMAN_FALLBACK_LOW_CONFIDENCE (sem execução).
-
-    2. Limiar de relevância do retriever (RETRIEVER_MIN_SCORE):
-       Se nenhuma ferramenta atingir o score mínimo → ABSTAIN_LOW_SCORE (sem execução).
-
-    Apenas quando ambos os guardas são satisfeitos a ferramenta é executada.
-    O relatório final inclui o Quality Gate com status operacional explícito.
+    Ver o docstring do módulo para a ordem dos guardas e para a fronteira entre a lógica
+    de produção e o uso de `expected_tool` na avaliação offline.
     """
     labels = ["FAST_PATH", "AGENT"]
 
     y_true: List[str] = []
     y_pred: List[str] = []
-    precision_hits: List[int] = []
+    hits_at_k: List[int] = []
+    hits_at_1: List[int] = []
 
     smart_cost_total = 0.0
     smart_latency_ms_total = 0.0
     baseline_cost_total = 0.0
     baseline_latency_ms_total = 0.0
+    # Economia contabilizada apenas sobre queries efetivamente resolvidas pelo pipeline
+    # (FAST_PATH respondido localmente + AGENT com execução correta).
+    resolved_smart_cost = 0.0
+    resolved_baseline_cost = 0.0
 
     correct_executions = 0
     incorrect_executions = 0
     abstentions = 0
     human_fallbacks = 0
+    ambiguous_confirmations = 0
     agent_queries_with_expected_tool = 0
 
     rows = []
@@ -196,6 +247,7 @@ def run_harness(
 
         smart_cost = COST_ROUTER_USD
         smart_latency_ms = route_result.latency_ms
+        resolved = False
 
         row = {
             "query": query,
@@ -207,6 +259,7 @@ def run_harness(
         if route_result.route == "FAST_PATH":
             fast_path_answer(query)
             row["execution_status"] = "RESOLVED_LOCAL"
+            resolved = True
 
         else:
             # ── GUARDA 1: Limiar de Confiança do Router ──────────────────────
@@ -216,7 +269,8 @@ def run_harness(
                 abstentions += 1
                 if expected_tool:
                     agent_queries_with_expected_tool += 1
-                    precision_hits.append(0)
+                    hits_at_k.append(0)
+                    hits_at_1.append(0)
                 row["execution_status"] = "HUMAN_FALLBACK_LOW_CONFIDENCE"
                 row["retrieved_tools"] = []
                 row["expected_tool"] = expected_tool
@@ -224,56 +278,64 @@ def run_harness(
                     f"Router confidence {confidence:.3f} < "
                     f"threshold {ROUTER_CONFIDENCE_THRESHOLD}"
                 )
-                # Contabiliza custo do router mas não do retrieval/LLM
-                smart_cost_total += smart_cost
-                smart_latency_ms_total += smart_latency_ms
-                baseline_start = time.perf_counter()
-                baseline_result = simulate_baseline_llm_call(query)
-                baseline_latency_ms_total += (time.perf_counter() - baseline_start) * 1000
-                baseline_cost_total += baseline_result["cost_usd"]
-                rows.append(row)
-                continue
-
-            # ── GUARDA 2: Retrieval e Limiar de Score ────────────────────────
-            retrieval_result = retriever.search(query, k=k)
-            smart_cost += COST_RETRIEVAL_USD
-            smart_latency_ms += retrieval_result.latency_ms
-
-            top_k_names = [m.name for m in retrieval_result.matches]
-            top_scores = [m.score for m in retrieval_result.matches]
-
-            if expected_tool:
-                agent_queries_with_expected_tool += 1
-                precision_hits.append(int(expected_tool in top_k_names))
-
-            row["retrieved_tools"] = top_k_names
-            row["retrieved_scores"] = top_scores
-            row["expected_tool"] = expected_tool
-
-            if not top_k_names:
-                # Retriever retornou lista vazia (todos abaixo de min_score)
-                abstentions += 1
-                row["execution_status"] = "ABSTAIN_LOW_SCORE"
-                row["fallback_reason"] = (
-                    f"Retriever retornou zero candidatos com score >= min_score. "
-                    f"Nenhuma tool executada."
-                )
             else:
-                # ── EXECUÇÃO CONDICIONAL — apenas com ambos os guardas satisfeitos ──
-                chosen_tool = top_k_names[0]
-                mock_tool_execution(chosen_tool, query)
-                llm_result = simulate_agent_llm_call(query, chosen_tool)
-                smart_cost += llm_result["cost_usd"]
+                # ── GUARDA 2: Retrieval e Limiar de Score ────────────────────
+                retrieval_result = retriever.search(query, k=k)
+                smart_cost += COST_RETRIEVAL_USD
+                smart_latency_ms += retrieval_result.latency_ms
+
+                top_k_names = [m.name for m in retrieval_result.matches]
+                top_scores = [m.score for m in retrieval_result.matches]
 
                 if expected_tool:
-                    if chosen_tool == expected_tool:
-                        correct_executions += 1
-                        row["execution_status"] = "SUCCESS"
-                    else:
-                        incorrect_executions += 1
-                        row["execution_status"] = "INCORRECT_TOOL_EXECUTED"
+                    agent_queries_with_expected_tool += 1
+                    hits_at_k.append(int(expected_tool in top_k_names))
+                    hits_at_1.append(int(bool(top_k_names) and top_k_names[0] == expected_tool))
+
+                row["retrieved_tools"] = top_k_names
+                row["retrieved_scores"] = top_scores
+                row["retrieved_variants"] = [
+                    m.matched_variant for m in retrieval_result.matches
+                ]
+                row["expected_tool"] = expected_tool
+
+                margin = _relative_margin(top_scores)
+                row["relative_margin"] = margin
+
+                if not top_k_names:
+                    abstentions += 1
+                    row["execution_status"] = "ABSTAIN_LOW_SCORE"
+                    row["fallback_reason"] = (
+                        "Retriever retornou zero candidatos com score >= min_score. "
+                        "Nenhuma tool executada."
+                    )
+                elif margin is not None and margin < MIN_RELATIVE_MARGIN:
+                    # ── GUARDA 3: Margem entre candidatos ────────────────────
+                    ambiguous_confirmations += 1
+                    abstentions += 1
+                    row["execution_status"] = "AMBIGUOUS_CONFIRMATION"
+                    row["fallback_reason"] = (
+                        f"Margem relativa {margin:.3f} < {MIN_RELATIVE_MARGIN} entre "
+                        f"'{top_k_names[0]}' e '{top_k_names[1]}'. "
+                        f"Confirmação do cliente requerida antes de executar."
+                    )
                 else:
-                    row["execution_status"] = "EXECUTED_NO_EXPECTED_TOOL"
+                    # ── EXECUÇÃO: os três guardas foram satisfeitos ──────────
+                    chosen_tool = top_k_names[0]
+                    mock_tool_execution(chosen_tool, query)
+                    llm_result = simulate_agent_llm_call(query, chosen_tool)
+                    smart_cost += llm_result["cost_usd"]
+
+                    if expected_tool:
+                        if chosen_tool == expected_tool:
+                            correct_executions += 1
+                            row["execution_status"] = "SUCCESS"
+                            resolved = True
+                        else:
+                            incorrect_executions += 1
+                            row["execution_status"] = "INCORRECT_TOOL_EXECUTED"
+                    else:
+                        row["execution_status"] = "EXECUTED_NO_EXPECTED_TOOL"
 
         smart_cost_total += smart_cost
         smart_latency_ms_total += smart_latency_ms
@@ -283,24 +345,27 @@ def run_harness(
         baseline_latency_ms_total += (time.perf_counter() - baseline_start) * 1000
         baseline_cost_total += baseline_result["cost_usd"]
 
+        if resolved:
+            resolved_smart_cost += smart_cost
+            resolved_baseline_cost += baseline_result["cost_usd"]
+
         rows.append(row)
 
     router_metrics = compute_router_metrics(y_true, y_pred, labels)
-    precision_at_k = compute_precision_at_k(precision_hits) if precision_hits else None
+    hit_rate_at_k = compute_precision_at_k(hits_at_k) if hits_at_k else None
+    hit_rate_at_1 = compute_precision_at_k(hits_at_1) if hits_at_1 else None
     savings = compute_savings(
         smart_cost_total, smart_latency_ms_total, baseline_cost_total, baseline_latency_ms_total
     )
 
     total_agent = agent_queries_with_expected_tool
-    task_success_rate = (
-        float(correct_executions / total_agent) if total_agent > 0 else None
-    )
+    task_success_rate = float(correct_executions / total_agent) if total_agent > 0 else None
     incorrect_execution_rate = (
         float(incorrect_executions / total_agent) if total_agent > 0 else 0.0
     )
-    abstention_rate = (
-        float(abstentions / total_agent) if total_agent > 0 else 0.0
-    )
+    abstention_rate = float(abstentions / total_agent) if total_agent > 0 else 0.0
+    executed = correct_executions + incorrect_executions
+    coverage_rate = float(executed / total_agent) if total_agent > 0 else 0.0
 
     quality_gate = _evaluate_quality_gate(task_success_rate, incorrect_executions)
 
@@ -308,13 +373,19 @@ def run_harness(
         "n_queries": len(eval_dataset),
         "router_accuracy": router_metrics["accuracy"],
         "confusion_matrix": router_metrics["confusion_matrix"],
-        "precision_at_k": precision_at_k,
+        # Nome preciso da métrica; `precision_at_k` é mantido por compatibilidade
+        # com o schema da Seção 3.4 da especificação.
+        "retrieval_hit_rate_at_1": hit_rate_at_1,
+        "retrieval_hit_rate_at_k": hit_rate_at_k,
+        "precision_at_k": hit_rate_at_k,
         "k": k,
         "task_success_rate": task_success_rate,
+        "coverage_rate": coverage_rate,
         "correct_executions": correct_executions,
         "incorrect_executions": incorrect_executions,
         "abstentions": abstentions,
         "human_fallbacks": human_fallbacks,
+        "ambiguous_confirmations": ambiguous_confirmations,
         "incorrect_execution_rate": incorrect_execution_rate,
         "abstention_rate": abstention_rate,
         **quality_gate,
@@ -327,14 +398,27 @@ def run_harness(
             "total_latency_ms": baseline_latency_ms_total,
         },
         **savings,
+        "economics": {
+            # Economia sobre o subconjunto que o pipeline realmente resolveu. A diferença
+            # em relação a `cost_savings_pct` é o custo que foi deslocado, não eliminado.
+            "resolved_smart_cost_usd": resolved_smart_cost,
+            "resolved_baseline_cost_usd": resolved_baseline_cost,
+            "cost_savings_pct_on_resolved": (
+                ((resolved_baseline_cost - resolved_smart_cost) / resolved_baseline_cost) * 100.0
+                if resolved_baseline_cost > 0
+                else 0.0
+            ),
+            "deferred_to_human": abstentions,
+            "human_handling_cost_usd": None,  # não modelado neste MVP
+        },
         "rows": rows,
     }
     return report
 
 
 def print_report(report: dict) -> None:
-    sep = "=" * 60
-    dash = "-" * 60
+    sep = "=" * 68
+    dash = "-" * 68
     print(sep)
     print("HARNESS DE AVALIAÇÃO - Router & Tool Retrieval")
     print(sep)
@@ -342,31 +426,44 @@ def print_report(report: dict) -> None:
     print(f"Acurácia do Router: {report['router_accuracy']:.1%}")
     print(f"Matriz de confusão: {report['confusion_matrix']}")
 
-    if report["precision_at_k"] is not None:
-        print(f"Precision@{report['k']} do Retriever (Hit Rate): {report['precision_at_k']:.1%}")
+    if report.get("retrieval_hit_rate_at_1") is not None:
+        print(f"Hit Rate@1 do Retriever: {report['retrieval_hit_rate_at_1']:.1%}")
+    if report.get("retrieval_hit_rate_at_k") is not None:
+        print(f"Hit Rate@{report['k']} do Retriever: {report['retrieval_hit_rate_at_k']:.1%}")
 
     if report.get("task_success_rate") is not None:
-        print(f"Taxa de Execução Correta (Top-1 Match): {report['task_success_rate']:.1%}")
+        print(f"Taxa de Execução Correta (Top-1 executado): {report['task_success_rate']:.1%}")
+    print(f"Cobertura transacional (executou algo): {report.get('coverage_rate', 0):.1%}")
 
-    print(f"Execuções Corretas: {report.get('correct_executions', 0)}")
-    print(f"Execuções Incorretas (Risco): {report.get('incorrect_executions', 0)}")
-    print(f"Abstentions / Human Fallback: {report.get('abstentions', 0)}")
-    if report.get("incorrect_execution_rate") is not None:
-        print(f"Taxa de Execução Incorreta: {report['incorrect_execution_rate']:.1%}")
-    if report.get("abstention_rate") is not None:
-        print(f"Taxa de Abstention: {report['abstention_rate']:.1%}")
+    print(dash)
+    print(f"Execuções corretas          : {report.get('correct_executions', 0)}")
+    print(f"Execuções incorretas (risco): {report.get('incorrect_executions', 0)}")
+    print(f"Abstenções (total)          : {report.get('abstentions', 0)}")
+    print(f"  - fallback humano (confiança baixa): {report.get('human_fallbacks', 0)}")
+    print(f"  - confirmação por ambiguidade      : {report.get('ambiguous_confirmations', 0)}")
+    print(f"Taxa de execução incorreta  : {report.get('incorrect_execution_rate', 0):.1%}")
+    print(f"Taxa de abstenção           : {report.get('abstention_rate', 0):.1%}")
 
+    econ = report.get("economics", {})
     print(dash)
     print(f"Custo pipeline inteligente: ${report['smart_pipeline']['total_cost_usd']:.5f}")
     print(f"Custo baseline (tudo pro LLM): ${report['baseline_always_llm']['total_cost_usd']:.5f}")
-    print(f"Economia de custo: {report.get('cost_savings_pct', 0):.1f}%")
+    print(f"Economia de custo (total): {report.get('cost_savings_pct', 0):.1f}%")
+    print(
+        f"Economia de custo (só queries resolvidas): "
+        f"{econ.get('cost_savings_pct_on_resolved', 0):.1f}%"
+    )
+    print(
+        f"  ATENÇÃO: {econ.get('deferred_to_human', 0)} queries foram desviadas para humano. "
+        f"Esse custo não está modelado e não é economia."
+    )
     print(f"Latência pipeline inteligente: {report['smart_pipeline']['total_latency_ms']:.1f} ms")
     print(f"Latência baseline: {report['baseline_always_llm']['total_latency_ms']:.1f} ms")
     print(f"Economia de latência: {report.get('latency_savings_pct', 0):.1f}%")
     print(sep)
 
     # ── Quality Gate ─────────────────────────────────────────────────────────
-    status = report.get("operational_status", "INDETERMINADO")
+    status = report.get("operational_status", STATUS_INDETERMINATE)
     approved = report.get("production_approved", False)
     gate_icon = "[OK]" if approved else "[ALERTA]"
     print(f"{gate_icon}  STATUS OPERACIONAL: {status}")

@@ -3,12 +3,13 @@ from pathlib import Path
 
 from common.data_loader import load_eval_dataset, load_router_training_data, load_tools
 from candidate_starter.harness import (
+    MIN_RELATIVE_MARGIN,
     RETRIEVER_MIN_SCORE,
     ROUTER_CONFIDENCE_THRESHOLD,
     print_report,
     run_harness,
 )
-from candidate_starter.retrieval import ToolRetriever
+from candidate_starter.retrieval import DEFAULT_INTENT_WEIGHT, ToolRetriever
 from candidate_starter.router import QueryRouter
 
 
@@ -20,17 +21,18 @@ def main() -> None:
     router = QueryRouter().fit(train_texts, train_labels)
 
     # Configuração explícita de segurança e qualidade:
-    # - min_score=RETRIEVER_MIN_SCORE: ativa abstention para queries sem aderência semântica
-    # - use_taxonomy=True: enriquece o índice com aliases canônicos, elevando Recall@2 de 15% → 85%
+    # - min_score=RETRIEVER_MIN_SCORE: abstenção para queries sem aderência semântica
+    # - use_taxonomy=True: recuperação em nível de capacidade + campo de glossário
     retriever = ToolRetriever(
         min_score=RETRIEVER_MIN_SCORE,
         use_taxonomy=True,
     ).fit(tools)
 
-    print(f"Pipeline configurado com:")
+    print("Pipeline configurado com:")
     print(f"  Router confidence threshold : {ROUTER_CONFIDENCE_THRESHOLD}")
     print(f"  Retriever min_score         : {RETRIEVER_MIN_SCORE}")
-    print(f"  Taxonomy enrichment         : ativado")
+    print(f"  Margem relativa mínima      : {MIN_RELATIVE_MARGIN}")
+    print(f"  Taxonomia de capacidades    : ativada (alpha={DEFAULT_INTENT_WEIGHT})")
     print()
 
     report = run_harness(router, retriever, tools, eval_dataset)
