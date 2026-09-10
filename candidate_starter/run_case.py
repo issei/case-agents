@@ -46,12 +46,12 @@ def _source_is_dirty() -> bool:
     faria toda execução a partir da segunda se declarar irreprodutível por causa do arquivo
     que ela acabou de gerar. O que `git_dirty` precisa responder é se o CÓDIGO que produziu
     estes números estava commitado.
+
+    O filtro é feito pelo próprio git, via pathspec. Fatiar as linhas do `--porcelain` em
+    Python não serve aqui: `_git` aplica `.strip()` na saída e come o espaço inicial do
+    prefixo de status da primeira linha, deslocando o caminho em um caractere.
     """
-    status = _git("status", "--porcelain")
-    return any(
-        line[3:].strip() and not line[3:].strip().startswith("reports/")
-        for line in status.splitlines()
-    )
+    return bool(_git("status", "--porcelain", "--", ".", ":(exclude)reports"))
 
 
 def build_snapshot() -> dict:
