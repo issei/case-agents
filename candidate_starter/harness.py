@@ -47,7 +47,11 @@ def compute_router_metrics(y_true: List[str], y_pred: List[str], labels: List[st
 
 
 def compute_precision_at_k(hits: List[int]) -> float:
-    """Calcule Precision@K a partir de uma lista de 0/1 (acertou ou não a tool)."""
+    """Calcule Precision@K / Hit Rate a partir de uma lista de 0/1 (acertou ou não a tool).
+    
+    Nota metrológica: No contexto deste benchmark (uma única ferramenta relevante
+    esperada por query), esta métrica quantifica o Hit Rate (Recall@1-in-K).
+    """
     if not hits:
         return 0.0
     return float(sum(hits) / len(hits))
@@ -96,6 +100,11 @@ def run_harness(
     baseline_cost_total = 0.0
     baseline_latency_ms_total = 0.0
 
+    correct_executions = 0
+    incorrect_executions = 0
+    abstentions = 0
+    agent_queries_with_expected_tool = 0
+
     rows = []
 
     for item in eval_dataset:
@@ -118,6 +127,7 @@ def run_harness(
 
         if route_result.route == "FAST_PATH":
             fast_path_answer(query)
+            row["execution_status"] = "RESOLVED_LOCAL"
         else:
             retrieval_result = retriever.search(query, k=k)
             smart_cost += COST_RETRIEVAL_USD
@@ -125,15 +135,30 @@ def run_harness(
 
             top_k_names = [m.name for m in retrieval_result.matches]
             if expected_tool:
+                agent_queries_with_expected_tool += 1
                 precision_hits.append(int(expected_tool in top_k_names))
 
             row["retrieved_tools"] = top_k_names
             row["expected_tool"] = expected_tool
 
             if top_k_names:
-                mock_tool_execution(top_k_names[0], query)
-                llm_result = simulate_agent_llm_call(query, top_k_names[0])
+                chosen_tool = top_k_names[0]
+                mock_tool_execution(chosen_tool, query)
+                llm_result = simulate_agent_llm_call(query, chosen_tool)
                 smart_cost += llm_result["cost_usd"]
+
+                if expected_tool:
+                    if chosen_tool == expected_tool:
+                        correct_executions += 1
+                        row["execution_status"] = "SUCCESS"
+                    else:
+                        incorrect_executions += 1
+                        row["execution_status"] = "INCORRECT_TOOL_EXECUTED"
+                else:
+                    row["execution_status"] = "EXECUTED_NO_EXPECTED_TOOL"
+            else:
+                abstentions += 1
+                row["execution_status"] = "ABSTAIN_FALLBACK"
 
         smart_cost_total += smart_cost
         smart_latency_ms_total += smart_latency_ms
@@ -151,12 +176,22 @@ def run_harness(
         smart_cost_total, smart_latency_ms_total, baseline_cost_total, baseline_latency_ms_total
     )
 
+    task_success_rate = (
+        float(correct_executions / agent_queries_with_expected_tool)
+        if agent_queries_with_expected_tool > 0
+        else None
+    )
+
     report = {
         "n_queries": len(eval_dataset),
         "router_accuracy": router_metrics["accuracy"],
         "confusion_matrix": router_metrics["confusion_matrix"],
         "precision_at_k": precision_at_k,
         "k": k,
+        "task_success_rate": task_success_rate,
+        "correct_executions": correct_executions,
+        "incorrect_executions": incorrect_executions,
+        "abstentions": abstentions,
         "smart_pipeline": {"total_cost_usd": smart_cost_total, "total_latency_ms": smart_latency_ms_total},
         "baseline_always_llm": {
             "total_cost_usd": baseline_cost_total,
@@ -176,7 +211,11 @@ def print_report(report: dict) -> None:
     print(f"Acurácia do Router: {report['router_accuracy']:.1%}")
     print(f"Matriz de confusão: {report['confusion_matrix']}")
     if report["precision_at_k"] is not None:
-        print(f"Precision@{report['k']} do Retriever: {report['precision_at_k']:.1%}")
+        print(f"Precision@{report['k']} do Retriever (Hit Rate): {report['precision_at_k']:.1%}")
+    if report.get("task_success_rate") is not None:
+        print(f"Taxa de Execução Correta (Top-1 Match): {report['task_success_rate']:.1%}")
+        print(f"Execuções com Tool Incorreta (Risco): {report.get('incorrect_executions', 0)}")
+        print(f"Abstentions (Fallback Seguro): {report.get('abstentions', 0)}")
     print("-" * 60)
     print(f"Custo pipeline inteligente: ${report['smart_pipeline']['total_cost_usd']:.5f}")
     print(f"Custo baseline (tudo pro LLM): ${report['baseline_always_llm']['total_cost_usd']:.5f}")

@@ -20,11 +20,12 @@ from common.schemas import RetrievalResult, Tool, ToolMatch
 
 
 class ToolRetriever(BaseToolRetriever):
-    """Retriever lexical com normalização canônica e desempate determinístico."""
+    """Retriever lexical com normalização canônica, desempate determinístico e suporte a abstention."""
 
-    def __init__(self) -> None:
+    def __init__(self, min_score: float = 0.0) -> None:
         self._tools: List[Tool] = []
         self._fitted = False
+        self._min_score = min_score
         self._vectorizer = TfidfVectorizer(
             lowercase=False,
             strip_accents=None,
@@ -49,8 +50,11 @@ class ToolRetriever(BaseToolRetriever):
         self._fitted = True
         return self
 
-    def search(self, query: str, k: int = 2) -> RetrievalResult:
-        """Retorna as top-k tools mais relevantes para `query`."""
+    def search(self, query: str, k: int = 2, min_score: float = None) -> RetrievalResult:
+        """Retorna as top-k tools mais relevantes para `query`.
+        
+        Permite descartar ferramentas com similaridade insuficiente (abstention).
+        """
         if not self._fitted:
             raise RuntimeError("Chame fit() antes de search().")
         if not query or not query.strip():
@@ -64,14 +68,18 @@ class ToolRetriever(BaseToolRetriever):
             latency_ms = (time.perf_counter() - start) * 1000.0
             return RetrievalResult(matches=[], latency_ms=latency_ms)
 
+        effective_min_score = min_score if min_score is not None else self._min_score
+
         normalized_query = normalize(query)
         query_vec = self._vectorizer.transform([normalized_query])
         scores = cosine_similarity(query_vec, self._tfidf_matrix)[0]
 
-        # Desempate determinístico: score decrescente, nome da ferramenta alfabético crescente
+        # Desempate determinístico: score decrescente, nome da ferramenta alfabético crescente.
+        # Filtra por score mínimo para prevenir a execução de ferramentas com similaridade nula (abstention).
         candidates = [
             (float(score), tool.name)
             for tool, score in zip(self._tools, scores)
+            if float(score) >= effective_min_score
         ]
         candidates.sort(key=lambda item: (-item[0], item[1]))
 

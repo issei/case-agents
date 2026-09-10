@@ -25,3 +25,8 @@ A recuperação e a inferência devem respeitar limiares explícitos:
 - Nenhuma mutação sem `idempotency_key` (prevenção de gasto duplo).
 - Restrições negativas explícitas: limites diários, saldo positivo, autorização MFA ativa.
 - Falha rápida (*fail-fast*) em qualquer discrepância de contrato.
+
+### 4. A Falácia da Economia Financeira sem Barreira de Segurança
+- Economia de custo (ex.: 77.8%) só é virtude de engenharia se o sistema estiver operando de forma correta e segura.
+- Executar cegamente a primeira tool de um ranking com 85% de erro no retrieval significa transferir o risco diretamente para a conta do cliente.
+- Um harness de confiança deve auditar a **Taxa de Execução Correta (Top-1 Match)** e contabilizar execuções incorretas como incidentes de segurança, priorizando a **Abstention Segura** sobre a execução forçada.

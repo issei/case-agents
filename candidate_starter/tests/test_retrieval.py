@@ -69,3 +69,26 @@ def test_retriever_deterministic_tie_breaking():
     res = r.search("termo_inexistente", k=3)
     names = [m.name for m in res.matches]
     assert names == ["alfa_tool", "beta_tool", "zebra_tool"]
+
+
+def test_retriever_abstention_with_min_score():
+    """Com min_score > 0, termos sem similaridade acionam abstention (lista vazia)."""
+    ties = [
+        Tool(name="zebra_tool", description="descricao qualquer", category="cat"),
+        Tool(name="alfa_tool", description="descricao qualquer", category="cat"),
+    ]
+    r = ToolRetriever().fit(ties)
+    # Sem min_score (default 0.0), retorna os 2 com score 0.0
+    res_zero = r.search("termo_inexistente", k=2, min_score=0.0)
+    assert len(res_zero.matches) == 2
+
+    # Com min_score > 0, descarta itens com similaridade nula
+    res_abstain = r.search("termo_inexistente", k=2, min_score=0.05)
+    assert res_abstain.matches == []
+
+
+def test_retriever_configurable_min_score_in_init():
+    """Configuração de min_score no construtor deve ser respeitada nas buscas."""
+    r = ToolRetriever(min_score=0.1).fit(TOOLS)
+    res = r.search("termo_completamente_aleatorio_xyz", k=2)
+    assert res.matches == []

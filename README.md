@@ -123,10 +123,10 @@ A implementação em `candidate_starter/` seguiu rigorosamente os princípios de
 
 | Componente | Arquivo | Decisão Técnica e Implementação |
 |---|---|---|
-| **Normalizador** | [`candidate_starter/normalization.py`](candidate_starter/normalization.py) | Função pura `normalize(text)` compartilhada: Unicode NFKD, remoção de diacríticos, minúsculas, remoção de caracteres não-alfanuméricos e colapso de espaços. |
+| **Normalizador** | [`common/normalization.py`](common/normalization.py) | Função pura `normalize(text)` compartilhada: Unicode NFKD, remoção de diacríticos, minúsculas, remoção de caracteres não-alfanuméricos e colapso de espaços. |
 | **Router** | [`candidate_starter/router.py`](candidate_starter/router.py) | Pipeline `TfidfVectorizer` + `LogisticRegression`. Extração da confiança via `max(predict_proba)`. Medição de latência precisa via `time.perf_counter()`. |
-| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Vetorização com n-grams (1, 2) sobre `name + description + category` já normalizados. Matriz de similaridade de cosseno ordenada por score decrescente e desempate estável por `name`. |
-| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Computação determinística de métricas: Acurácia, Matriz de Confusão completa (mesmo com células zero), Precision@K e economias percentuais com tratamento de casos limite (baseline zero). |
+| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Vetorização com n-grams (1, 2) sobre `name + description + category` já normalizados. Matriz de similaridade de cosseno ordenada por score decrescente e desempate estável por `name`. Suporte a limiar mínimo (`min_score`) para abstention. |
+| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Computação determinística de métricas: Acurácia, Matriz de Confusão completa, Precision@K (Hit Rate), proteção contra divisão por zero e contabilidade de abstention e taxa de sucesso de execução. |
 | **Orquestrador** | [`candidate_starter/run_case.py`](candidate_starter/run_case.py) | Script de execução de ponta a ponta que lê as fontes de dados, treina os componentes, avalia sobre o dataset de teste e serializa o relatório JSON formatado. |
 
 ### 5. Testes & Verificação Contínua
@@ -211,6 +211,30 @@ Latency:
 | **Precision@2 no Catálogo** | **15.0%** | N/A | Redução de 285 tools para 2 candidatas por intenção |
 
 > O relatório estruturado completo está persistido em: [**`reports/candidate_report.json`**](reports/candidate_report.json).
+
+---
+
+## 🔍 Diagnóstico Crítico do MVP & Lições para Produção Bancária
+
+> **Nota de Transparência de Engenharia:** Este repositório entrega a implementação executável de um **MVP Baseline local** para o desafio. Os artefatos de governança empresarial ([`APM.yml`](APM.yml) e referências a OmniRoute Gateway) representam a **especificação arquitetural alvo para produção**, não serviços de infraestrutura ativos nesta pasta de exercícios.
+
+A execução do benchmark revelou três aprendizados essenciais que diferenciam um protótipo de um sistema financeiro real:
+
+### 1. O Descompasso Taxonômico no Retrieval (15% Precision@2)
+O modelo TF-IDF alcançou 15% de precisão (3 acertos em 20 queries `AGENT`) não por falha de implementação matemática, mas por um **desalinhamento estrutural entre a taxonomia do dataset e o vocabulário do catálogo**:
+* O dataset espera ferramentas canônicas/genéricas: `bloquear_cartao`, `consultar_fatura`, `alterar_endereco`.
+* O catálogo de 285 tools possui ferramentas operacionais hiperespecíficas: `solicitar_bloqueio_preventivo_cartao`, `gerar_linha_digitavel_fatura`, `atualizar_cep_entrega`.
+* **Conclusão:** Abordagens puramente léxicas (TF-IDF/BM25) falham quando não há sobreposição vocabular direta. Para produção, a evolução necessária é:
+  1. **Tabela de Aliases & Metadados Hierárquicos** (mapeando intenções de alto nível para sub-tools);
+  2. **Retrieval Híbrido** (BM25 + Dense Embeddings semânticos);
+  3. **Reranker** contextual com score calibration.
+
+### 2. O Risco da "Economia Cega" em Domínio Bancário
+O pipeline inteligente economizou **77.8% de custo** e **95% de latência**, mas essa economia é em parte **estrutural** (o benchmark premia o envio para o caminho barato).
+* **O Perigo:** Executar cegamente a primeira tool retornada (`top_k_names[0]`) quando o retrieval erra 85% das vezes causaria execuções indevidas graves em produção (ex.: registrar compra não reconhecida em vez de estornar transação).
+* **A Correção Implementada:** 
+  * **Abstention / Threshold de Relevância:** O retriever descarta candidatos com score nulo ou inferior a um limiar mínimo em vez de forçar um desempate alfabético enganoso.
+  * **Controle de Confiança:** Quando a confiança da rota ou o score da ferramenta for insuficiente, o pipeline registra necessidade de confirmação ou **transbordo para atendente humano (`HUMAN_FALLBACK`)**, impedindo execuções automáticas incorretas.
 
 ---
 
