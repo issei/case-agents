@@ -27,23 +27,30 @@ from common.schemas import Tool
 
 
 def compute_router_metrics(y_true: List[str], y_pred: List[str], labels: List[str]) -> Dict:
-    """TODO: calcule a acurácia e a matriz de confusão do router.
+    """Calcule a acurácia e a matriz de confusão do router."""
+    total = len(y_true)
+    if total == 0:
+        accuracy = 0.0
+    else:
+        correct = sum(1 for yt, yp in zip(y_true, y_pred) if yt == yp)
+        accuracy = float(correct / total)
 
-    Deve retornar um dict no formato:
-        {
-            "accuracy": 0.9,
-            "confusion_matrix": {
-                "FAST_PATH": {"FAST_PATH": 5, "AGENT": 1},
-                "AGENT": {"FAST_PATH": 0, "AGENT": 10},
-            },
-        }
-    """
-    raise NotImplementedError("Implemente compute_router_metrics.")
+    matrix = {true_lbl: {pred_lbl: 0 for pred_lbl in labels} for true_lbl in labels}
+    for yt, yp in zip(y_true, y_pred):
+        if yt in matrix and yp in matrix[yt]:
+            matrix[yt][yp] += 1
+
+    return {
+        "accuracy": accuracy,
+        "confusion_matrix": matrix,
+    }
 
 
 def compute_precision_at_k(hits: List[int]) -> float:
-    """TODO: calcule Precision@K a partir de uma lista de 0/1 (acertou ou não a tool)."""
-    raise NotImplementedError("Implemente compute_precision_at_k.")
+    """Calcule Precision@K a partir de uma lista de 0/1 (acertou ou não a tool)."""
+    if not hits:
+        return 0.0
+    return float(sum(hits) / len(hits))
 
 
 def compute_savings(
@@ -52,13 +59,23 @@ def compute_savings(
     baseline_cost_usd: float,
     baseline_latency_ms: float,
 ) -> Dict:
-    """TODO: calcule a % de economia de custo e de latência do pipeline inteligente em
+    """Calcule a % de economia de custo e de latência do pipeline inteligente em
     relação ao baseline (mandar tudo pro LLM caro).
-
-    Deve retornar um dict no formato:
-        {"cost_savings_pct": 65.0, "latency_savings_pct": 40.0}
     """
-    raise NotImplementedError("Implemente compute_savings.")
+    cost_savings_pct = (
+        ((baseline_cost_usd - smart_cost_usd) / baseline_cost_usd) * 100.0
+        if baseline_cost_usd > 0
+        else 0.0
+    )
+    latency_savings_pct = (
+        ((baseline_latency_ms - smart_latency_ms) / baseline_latency_ms) * 100.0
+        if baseline_latency_ms > 0
+        else 0.0
+    )
+    return {
+        "cost_savings_pct": cost_savings_pct,
+        "latency_savings_pct": latency_savings_pct,
+    }
 
 
 def run_harness(
