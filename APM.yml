@@ -1,0 +1,684 @@
+# ==============================================================================
+# MICROSOFT AGENT PACKAGING & MANAGEMENT MANIFEST (APM)
+# Standard: Microsoft Azure AI Foundry / Semantic Kernel Enterprise Specification
+# Schema: apm.azure.microsoft.com/v1alpha1
+# ==============================================================================
+
+apiVersion: apm.azure.microsoft.com/v1alpha1
+kind: AgentPackagingManifest
+
+# ------------------------------------------------------------------------------
+# 1. METADADOS E VERSIONAMENTO
+# ------------------------------------------------------------------------------
+metadata:
+  name: banking-router-agent
+  version: "1.0.0"
+  display_name: "Enterprise Digital Banking Routing & Execution Agent"
+  description: "Agente de roteamento e execução para atendimento de banco digital."
+  organization: "Microsoft Cloud & AI Architecture / Banking Digital Solutions"
+  maintainer: "llmops-platform-team@fintech.bank.internal"
+  environment: "production"
+  tags:
+    domain: "banking"
+    tier: "mission-critical"
+    framework: "semantic-kernel"
+    cloud_provider: "azure"
+  compliance:
+    standards:
+      - "PCI-DSS-v4.0"
+      - "LGPD-BR-13709"
+      - "BACEN-Resolution-4893"
+      - "ISO-IEC-27001-2022"
+    data_classification: "CONFIDENTIAL_PII"
+
+# ------------------------------------------------------------------------------
+# 2. ROTEAMENTO E CONFIABILIDADE (ROUTER & POLICIES)
+# ------------------------------------------------------------------------------
+runtime:
+  engine: "semantic-kernel-v1"
+  default_llm_deployment: "azure-openai-gpt-4o-mini"
+  orchestration_pattern: "triage-and-delegate"
+
+routing_and_policies:
+  query_router:
+    name: "AdaptiveConfidenceRouter"
+    strategy: "hybrid_classification" # Sparse (BM25/Regex) + Dense Embedding Classifiers
+    min_confidence: 0.75               # Limiar estrito: abaixo de 0.75 aciona salvaguardas
+    cache_policy:
+      enabled: true
+      ttl_seconds: 3600
+      max_size: 10000
+
+    routes:
+      # ROTA 1: FAST_PATH (Respostas locais, FAQs determinísticas, saudações sem tools)
+      - id: "FAST_PATH"
+        display_name: "Fast Path / Deterministic Tier"
+        description: "Consultas de FAQ, saudações e dúvidas institucionais sem necessidade de chamadas de API ou LLM caro."
+        execution_target: "common.mock_llm.fast_response_engine"
+        confidence_threshold: 0.85
+        fallback_target: "AGENT"
+        sla_p99_latency_ms: 120
+        allowed_intents:
+          - "greetings"
+          - "faq_institution"
+          - "faq_pix_limits_general_info"
+          - "faq_tariffs_and_rates"
+          - "goodbye"
+
+      # ROTA 2: AGENT (Raciocínio deliberado, seleção dinâmica de tools e mutações)
+      - id: "AGENT"
+        display_name: "Agentic Tool Execution Tier"
+        description: "Operações transacionais, consultas de dados privados do cliente e ações que exigem catálogo de tools."
+        execution_target: "core.agent_runtime.ReActOrchestrator"
+        confidence_threshold: 0.75
+        fallback_target: "HUMAN_HANDOFF"
+        sla_p99_latency_ms: 1800
+        tool_selection:
+          retriever: "hybrid_bm25_dense"
+          top_k: 2
+          filter_by_authorization: true
+
+      # ROTA 3: HUMAN_HANDOFF (Rota de salvaguarda e transição para transbordo humano)
+      - id: "HUMAN_HANDOFF"
+        display_name: "Human Specialist Handoff Tier"
+        description: "Transbordo imediato para atendente humano em caso de baixa confiança, frustração ou riscos de conformidade."
+        execution_target: "services.contact_center.escalation_bridge"
+        trigger_conditions:
+          - "confidence < 0.75"
+          - "consecutive_failures >= 2"
+          - "sentiment_frustration_detected == true"
+          - "security_alert_raised == true"
+        priority: "CRITICAL"
+        queue: "tier2-specialized-banking-support"
+
+  execution_policies:
+    # Limites globais e de passo para mitigação de loops infinitos (Poka-Yoke)
+    max_iterations: 5
+    timeouts:
+      per_step_timeout_ms: 2500
+      global_timeout_ms: 10000
+    
+    # Políticas de Retry e Resiliência (Microsoft Cloud Design Patterns)
+    resilience:
+      retries:
+        max_attempts: 3
+        backoff_strategy: "exponential_with_jitter"
+        initial_interval_ms: 200
+        multiplier: 2.0
+        max_interval_ms: 1500
+        retryable_status_codes:
+          - 408 # Request Timeout
+          - 429 # Rate Limited
+          - 500 # Internal Server Error
+          - 502 # Bad Gateway
+          - 503 # Service Unavailable
+          - 504 # Gateway Timeout
+      circuit_breaker:
+        failure_threshold_percentage: 50
+        sampling_duration_seconds: 30
+        minimum_requests_sampled: 10
+        break_duration_seconds: 60
+
+# ------------------------------------------------------------------------------
+# 3 & 4. REGISTRO, AGRUPAMENTO E ESPECIFICAÇÃO DE INTERFACE DE SKILLS (ACI & POKA-YOKE)
+# ------------------------------------------------------------------------------
+skills_catalog:
+  # ============================================================================
+  # SKILL 1: pix_transfers
+  # ============================================================================
+  - id: "pix_transfers"
+    display_name: "Operações Pix e Chaves Bancárias"
+    description: "Gerencia operações de envio instantâneo Pix, manutenção de chaves de endereçamento (DICT) e estorno/devolução de transações (MED/Bacen)."
+    purpose: "Executar movimentações financeiras instantâneas e ciclo de vida de chaves com garantias de idempotência e step-up auth."
+    type: "MUTATE"
+    authorization_required: true
+    auth_policy:
+      mfa_method: "biometrics_or_totp"
+      required_scopes: ["pix:transfer:write", "pix:keys:manage"]
+      step_up_prompt: "Autorização biométrica ou token de segurança obrigatório para movimentações Pix."
+
+    # Sub-ferramentas consolidadas do catálogo de 285 ferramentas
+    mapped_tools:
+      - "pix_enviar"
+      - "pix_receber_chave"
+      - "pix_consultar_status"
+      - "pix_agendar"
+      - "pix_cancelar_agendamento"
+      - "pix_limite_diario_consultar"
+      - "pix_limite_diario_alterar"
+      - "pix_devolver_valor"
+      - "pix_cadastrar_chave"
+      - "pix_excluir_chave"
+
+    # Poka-Yoke: Restrições Negativas Invioláveis (Fail-Fast Constraints)
+    negative_constraints:
+      - "PROIBIDO efetuar transferência com valor menor ou igual a R$ 0.00."
+      - "PROIBIDO autorizar transação sem chave de idempotência (idempotency_key) para evitar duplicações de pagamento."
+      - "PROIBIDO executar transferências que ultrapassem o limite diário ou noturno estabelecido pelo BACEN sem agendamento prévio."
+      - "PROIBIDO concluir operações Pix sem validação positiva de MFA/Token de segurança do cliente."
+      - "PROIBIDO solicitar a devolução (estorno) de transações inexistentes ou já estornadas integralmente."
+
+    input_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "PixTransferInput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "operation"
+        - "idempotency_key"
+        - "account_id"
+      properties:
+        operation:
+          type: "string"
+          enum:
+            - "ENVIAR_PIX"
+            - "AGENDAR_PIX"
+            - "ESTORNAR_PIX"
+            - "CADASTRAR_CHAVE"
+            - "EXCLUIR_CHAVE"
+          description: "Sub-operação Pix a ser executada."
+        idempotency_key:
+          type: "string"
+          format: "uuid"
+          description: "UUID v4 único para garantir execução única e prevenir double-spending."
+        account_id:
+          type: "string"
+          pattern: "^[0-9]{5,12}-[0-9X]$"
+          description: "Identificador da conta corrente/pagamento no formato AGENCIA-CONTA."
+        amount:
+          type: "number"
+          minimum: 0.01
+          maximum: 100000.00
+          description: "Valor da transferência em BRL. Obrigatório para operações financeiras."
+        pix_key:
+          type: "string"
+          description: "Chave Pix de destino (CPF, CNPJ, E-mail, Telefone E.164 ou EVP)."
+        pix_key_type:
+          type: "string"
+          enum: ["CPF", "CNPJ", "EMAIL", "PHONE", "EVP"]
+          description: "Tipo da chave Pix."
+        transaction_id_to_refund:
+          type: "string"
+          pattern: "^E[0-9]{8}[0-9]{4}[0-9]{12}[A-Za-z0-9]{11}$"
+          description: "EndToEndId BACEN obrigatório em caso de operação de estorno/devolução."
+        description:
+          type: "string"
+          maxLength: 140
+          description: "Mensagem descritiva associada ao Pix."
+
+    output_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "PixTransferOutput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "status"
+        - "transaction_id"
+        - "timestamp"
+      properties:
+        status:
+          type: "string"
+          enum: ["COMPLETED", "PENDING_MFA", "SCHEDULED", "REJECTED_LIMIT", "FAILED"]
+        transaction_id:
+          type: "string"
+          description: "Identificador unívoco do processamento da transação."
+        end_to_end_id:
+          type: "string"
+          description: "Identificador oficial BACEN para conciliação."
+        timestamp:
+          type: "string"
+          format: "date-time"
+        details:
+          type: "object"
+          properties:
+            amount_transferred:
+              type: "number"
+            recipient_name_masked:
+              type: "string"
+            rejection_reason:
+              type: "string"
+
+    examples:
+      - title: "Envio de Pix com sucesso"
+        input:
+          operation: "ENVIAR_PIX"
+          idempotency_key: "e7b9f35c-7d92-4f33-8a39-93e1b7ec1245"
+          account_id: "00012345-6"
+          amount: 250.50
+          pix_key: "usuario@dominio.com.br"
+          pix_key_type: "EMAIL"
+          description: "Pagamento do almoço de equipe"
+        output:
+          status: "COMPLETED"
+          transaction_id: "tx-pix-88912401"
+          end_to_end_id: "E0041696820260909214000123456789"
+          timestamp: "2026-09-09T21:40:00Z"
+          details:
+            amount_transferred: 250.50
+            recipient_name_masked: "MAR*** SIL***"
+
+  # ============================================================================
+  # SKILL 2: cards_management
+  # ============================================================================
+  - id: "cards_management"
+    display_name: "Gestão de Cartões e Contestações"
+    description: "Controla o ciclo de vida dos cartões físicos e virtuais: bloqueio cautelar/definitivo, alteração de limite de crédito e abertura de disputas de fatura (chargeback)."
+    purpose: "Garantir a segurança dos cartões de crédito e débito e permitir ajustes imediatos de limites e contestações sob regras antifraude."
+    type: "MUTATE"
+    authorization_required: true
+    auth_policy:
+      mfa_method: "step_up_token"
+      required_scopes: ["cards:manage:write", "cards:dispute:create"]
+      step_up_prompt: "Validação de segurança necessária para alteração de limites e contestações."
+
+    mapped_tools:
+      - "bloquear_cartao"
+      - "bloquear_cartao_temporariamente"
+      - "suspender_uso_cartao"
+      - "desbloquear_cartao"
+      - "desbloquear_cartao_temporario"
+      - "ativar_cartao_novo"
+      - "solicitar_segunda_via_cartao"
+      - "rastrear_segunda_via_cartao"
+      - "ativar_cartao_virtual"
+      - "consultar_limite_cartao"
+      - "simular_aumento_limite_cartao"
+      - "aumentar_limite_cartao"
+      - "reduzir_limite_cartao"
+      - "cancelar_cartao"
+      - "alterar_vencimento_fatura"
+      - "contestar_compra_fatura"
+      - "abrir_disputa_chargeback"
+
+    negative_constraints:
+      - "PROIBIDO desbloquear cartões bloqueados por suspeita de fraude sem validação manual ou token criptográfico de canal confiável."
+      - "PROIBIDO aprovar aumento de limite superior à política de crédito (pre_approved_limit) sem reanálise de risco."
+      - "PROIBIDO abrir contestação de fatura para compras realizadas há mais de 120 dias ou compras já sob disputa em andamento."
+      - "PROIBIDO expor em tela ou logs o PAN completo (16 dígitos) ou o CVV do cartão (PCI-DSS Compliance)."
+
+    input_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "CardsManagementInput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "card_token"
+        - "action"
+      properties:
+        card_token:
+          type: "string"
+          pattern: "^card_tok_[a-zA-Z0-9_]{16,32}$"
+          description: "Token seguro representativo do cartão (proibido o uso de PAN puro)."
+        action:
+          type: "string"
+          enum:
+            - "BLOQUEAR_TEMPORARIO"
+            - "BLOQUEAR_DEFINITIVO_ROUBO"
+            - "DESBLOQUEAR"
+            - "ALTERAR_LIMITE"
+            - "CONTESTAR_COMPRA"
+            - "CRIAR_CARTAO_VIRTUAL"
+        target_limit:
+          type: "number"
+          minimum: 0.00
+          description: "Novo valor de limite desejado em BRL (obrigatório se action = ALTERAR_LIMITE)."
+        dispute_details:
+          type: "object"
+          properties:
+            transaction_id:
+              type: "string"
+            reason:
+              type: "string"
+              enum: ["FRAUDE_NAO_RECONHECIDA", "VALOR_INCORRETO", "PRODUTO_NAO_ENTREGUE", "COMPRA_DUPLICADA"]
+            evidence_notes:
+              type: "string"
+              maxLength: 500
+
+    output_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "CardsManagementOutput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "success"
+        - "card_token"
+        - "current_status"
+        - "timestamp"
+      properties:
+        success:
+          type: "boolean"
+        card_token:
+          type: "string"
+        current_status:
+          type: "string"
+          enum: ["ACTIVE", "BLOCKED_TEMPORARY", "BLOCKED_FRAUD", "DISPUTED", "LIMIT_UPDATED"]
+        updated_limit:
+          type: "number"
+        protocol_number:
+          type: "string"
+          description: "Número do protocolo gerado para auditoria e acompanhamento do cliente."
+        timestamp:
+          type: "string"
+          format: "date-time"
+
+    examples:
+      - title: "Bloqueio cautelar de cartão por suspeita de perda"
+        input:
+          card_token: "card_tok_9918237192837482"
+          action: "BLOQUEAR_TEMPORARIO"
+        output:
+          success: true
+          card_token: "card_tok_9918237192837482"
+          current_status: "BLOCKED_TEMPORARY"
+          protocol_number: "PRT-2026-998811"
+          timestamp: "2026-09-09T21:41:00Z"
+
+  # ============================================================================
+  # SKILL 3: account_info
+  # ============================================================================
+  - id: "account_info"
+    display_name: "Informações e Extratos de Conta"
+    description: "Consulta dados analíticos da conta bancária: saldos (corrente, poupança, investimentos), extrato detalhado por período e emissão de comprovantes."
+    purpose: "Fornecer transparência financeira ao cliente em modo estrito de leitura sem efeitos colaterais nos saldos."
+    type: "READ"
+    authorization_required: true
+    auth_policy:
+      mfa_method: "bearer_session_auth"
+      required_scopes: ["account:info:read", "account:statement:read"]
+
+    mapped_tools:
+      - "consultar_saldo"
+      - "consultar_saldo_disponivel_pix"
+      - "consultar_saldo_poupanca"
+      - "consultar_extrato"
+      - "consultar_fatura"
+      - "consultar_fatura_anterior"
+      - "reenviar_fatura_email"
+      - "consultar_rendimento_conta"
+      - "consultar_taxa_juros"
+      - "consultar_score_credito"
+      - "obter_comprovante_transacao"
+
+    negative_constraints:
+      - "PROIBIDO realizar qualquer débito, crédito ou bloqueio de saldo a partir desta skill."
+      - "PROIBIDO retornar extratos de períodos superiores a 180 dias em chamada síncrona sem paginação."
+      - "PROIBIDO expor dados de contas de terceiros ou transações fora do escopo do cliente autenticado."
+
+    input_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "AccountInfoInput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "account_id"
+        - "query_type"
+      properties:
+        account_id:
+          type: "string"
+          pattern: "^[0-9]{5,12}-[0-9X]$"
+        query_type:
+          type: "string"
+          enum:
+            - "SALDO_CONSOLIDADO"
+            - "EXTRATO_PERIODO"
+            - "FATURA_ATUAL"
+            - "COMPROVANTE"
+        date_range:
+          type: "object"
+          properties:
+            start_date:
+              type: "string"
+              format: "date"
+            end_date:
+              type: "string"
+              format: "date"
+        transaction_receipt_id:
+          type: "string"
+          description: "ID da transação para obtenção de 2ª via de comprovante."
+
+    output_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "AccountInfoOutput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "account_id"
+        - "query_type"
+        - "generated_at"
+      properties:
+        account_id:
+          type: "string"
+        query_type:
+          type: "string"
+        generated_at:
+          type: "string"
+          format: "date-time"
+        balances:
+          type: "object"
+          properties:
+            checking_account:
+              type: "number"
+            savings_account:
+              type: "number"
+            available_for_pix:
+              type: "number"
+            blocked_amount:
+              type: "number"
+        statement_entries:
+          type: "array"
+          items:
+            type: "object"
+            required: ["id", "date", "description", "amount", "operation_type"]
+            properties:
+              id:
+                type: "string"
+              date:
+                type: "string"
+                format: "date-time"
+              description:
+                type: "string"
+              amount:
+                type: "number"
+              operation_type:
+                type: "string"
+                enum: ["DEBIT", "CREDIT"]
+
+    examples:
+      - title: "Consulta de saldos unificados da conta"
+        input:
+          account_id: "00012345-6"
+          query_type: "SALDO_CONSOLIDADO"
+        output:
+          account_id: "00012345-6"
+          query_type: "SALDO_CONSOLIDADO"
+          generated_at: "2026-09-09T21:42:00Z"
+          balances:
+            checking_account: 1420.50
+            savings_account: 5000.00
+            available_for_pix: 1420.50
+            blocked_amount: 0.00
+
+  # ============================================================================
+  # SKILL 4: customer_profile
+  # ============================================================================
+  - id: "customer_profile"
+    display_name: "Perfil do Cliente e Suporte Cadastral"
+    description: "Gerencia os dados cadastrais (endereço, telefone, e-mail, renda declarada) e tickets de suporte geral e ouvidoria."
+    purpose: "Manter a conformidade regulatória dos dados do cliente (KYC) e viabilizar canais de atendimento e correspondência."
+    type: "MUTATE"
+    authorization_required: true
+    auth_policy:
+      mfa_method: "otp_sms_or_email_step_up"
+      required_scopes: ["customer:profile:read", "customer:profile:write"]
+
+    mapped_tools:
+      - "alterar_endereco"
+      - "atualizar_cep_entrega"
+      - "consultar_endereco_cadastrado"
+      - "alterar_telefone"
+      - "confirmar_telefone_cadastrado"
+      - "atualizar_numero_whatsapp"
+      - "atualizar_email"
+      - "confirmar_email_cadastrado"
+      - "recuperar_acesso_email"
+      - "atualizar_estado_civil"
+      - "atualizar_profissao"
+      - "atualizar_renda_declarada"
+      - "solicitar_suporte_geral"
+      - "abrir_chamado_ouvidoria"
+
+    negative_constraints:
+      - "PROIBIDO alterar dados de contato primários (e-mail ou telefone) sem validação prévia de código de verificação enviado ao canal já cadastrado."
+      - "PROIBIDO persistir alterações de endereço sem validação do formato e existência do CEP junto à base dos Correios."
+      - "PROIBIDO alterar o CPF/CNPJ original do titular através desta skill (exige processo presencial ou canal de segurança nível 3)."
+
+    input_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "CustomerProfileInput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "customer_id"
+        - "update_type"
+      properties:
+        customer_id:
+          type: "string"
+          pattern: "^cust_[a-zA-Z0-9]{12,24}$"
+          description: "ID único do cliente no CRM bancário."
+        update_type:
+          type: "string"
+          enum:
+            - "ATUALIZAR_ENDERECO"
+            - "ATUALIZAR_TELEFONE"
+            - "ATUALIZAR_EMAIL"
+            - "ATUALIZAR_RENDA"
+            - "CONSULTAR_CADASTRO"
+        address_payload:
+          type: "object"
+          properties:
+            zip_code:
+              type: "string"
+              pattern: "^[0-9]{5}-?[0-9]{3}$"
+            street:
+              type: "string"
+            number:
+              type: "string"
+            neighborhood:
+              type: "string"
+            city:
+              type: "string"
+            state:
+              type: "string"
+              pattern: "^[A-Z]{2}$"
+        contact_payload:
+          type: "object"
+          properties:
+            new_phone:
+              type: "string"
+              pattern: "^\\+55[0-9]{10,11}$"
+            new_email:
+              type: "string"
+              format: "email"
+            verification_code:
+              type: "string"
+              pattern: "^[0-9]{6}$"
+        declared_income:
+          type: "number"
+          minimum: 0.00
+
+    output_schema:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      title: "CustomerProfileOutput"
+      type: "object"
+      additionalProperties: false
+      required:
+        - "customer_id"
+        - "status"
+        - "updated_at"
+      properties:
+        customer_id:
+          type: "string"
+        status:
+          type: "string"
+          enum: ["UPDATED_SUCCESSFULLY", "PENDING_VERIFICATION_CODE", "REJECTED_INVALID_DATA"]
+        updated_at:
+          type: "string"
+          format: "date-time"
+        fields_updated:
+          type: "array"
+          items:
+            type: "string"
+        audit_trail_id:
+          type: "string"
+
+    examples:
+      - title: "Atualização de endereço com CEP validado"
+        input:
+          customer_id: "cust_992837192834"
+          update_type: "ATUALIZAR_ENDERECO"
+          address_payload:
+            zip_code: "01310-100"
+            street: "Avenida Paulista"
+            number: "1000"
+            neighborhood: "Bela Vista"
+            city: "São Paulo"
+            state: "SP"
+        output:
+          customer_id: "cust_992837192834"
+          status: "UPDATED_SUCCESSFULLY"
+          updated_at: "2026-09-09T21:42:30Z"
+          fields_updated: ["address"]
+          audit_trail_id: "aud-prf-20260909-001"
+
+# ------------------------------------------------------------------------------
+# 5. AUDITORIA E OBSERVABILIDADE (LLMOps Pipeline)
+# ------------------------------------------------------------------------------
+audit_and_observability:
+  pipeline:
+    framework: "OpenTelemetry"
+    specification_version: "1.28.0"
+    exporters:
+      - type: "AzureApplicationInsights"
+        connection_string_secret_ref: "env:APPLICATIONINSIGHTS_CONNECTION_STRING"
+      - type: "AzureAIFoundryTracing"
+        endpoint_secret_ref: "env:AZURE_AI_FOUNDRY_PROJECT_ENDPOINT"
+
+    context_propagation:
+      mandatory_identifiers:
+        - key: "correlation_id"
+          source: "header:x-correlation-id"
+          description: "Identificador global da requisição para rastreabilidade de ponta a ponta."
+        - key: "session_id"
+          source: "header:x-session-id"
+          description: "Identificador da sessão conversacional do usuário com o agente."
+        - key: "final_state"
+          source: "context:execution.final_state"
+          description: "Resultado terminal do fluxo (FAST_PATH_ANSWERED, AGENT_EXECUTED, HANDOFF_TRIGGERED, ERROR)."
+        - key: "selected_route"
+          source: "context:router.predicted_route"
+        - key: "router_confidence"
+          source: "context:router.confidence_score"
+
+    pii_redaction_and_security:
+      enabled: true
+      data_masking_policy: "strict_fintech_mask"
+      compliance: ["LGPD", "BACEN", "PCI-DSS"]
+      redaction_rules:
+        - name: "mask_cpf"
+          pattern: "\\b\\d{3}\\.?\\d{3}\\.?\\d{3}-?\\d{2}\\b"
+          replacement: "[REDACTED_CPF]"
+        - name: "mask_pan_card"
+          pattern: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\\b"
+          replacement: "[REDACTED_CARD_PAN]"
+        - name: "mask_pix_key_phone"
+          pattern: "\\+55\\s?\\(?\\d{2}\\)?\\s?9?\\d{4}-?\\d{4}"
+          replacement: "[REDACTED_PHONE]"
+        - name: "mask_email"
+          pattern: "[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+"
+          replacement: "[REDACTED_EMAIL]"
+
+    telemetry_metrics:
+      router_latency_p95_target_ms: 150
+      tool_retrieval_precision_at_k: 0.90
+      handoff_rate_max_threshold: 0.10
+      cost_reduction_vs_direct_llm_percent: 65.0
