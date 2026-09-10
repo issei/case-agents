@@ -33,8 +33,10 @@ isso a proteção precisa acontecer ANTES da execução, via guardas 1–3.
      mantido por compatibilidade com o schema da Seção 3.4 da especificação.
   3. Economia de custo/latência vs baseline sempre-LLM, separada entre total e
      queries efetivamente resolvidas (economia obtida por abstenção não é ganho
-     operacional — é trabalho empurrado para o atendimento humano).
-  4. Quality Gate: APROVADO / REPROVADO / INDETERMINADO.
+     operacional — é trabalho empurrado para o atendimento humano), mais o ponto de
+     equilíbrio do custo de atendimento humano.
+  4. Quality Gate: APROVADO / REPROVADO / INDETERMINADO, acompanhado de
+     `production_readiness` — passar no gate deste benchmark não é prontidão bancária.
 """
 import time
 from typing import Dict, List, Optional
@@ -76,9 +78,25 @@ INCORRECT_EXECUTION_TOLERANCE: int = 0
 Qualquer execução com tool incorreta é tratada como incidente de segurança.
 """
 
-STATUS_APPROVED = "APROVADO PARA PRODUÇÃO"
-STATUS_REJECTED = "REPROVADO PARA PRODUÇÃO (Quality Gate Violado)"
+STATUS_APPROVED = "APROVADO NO BENCHMARK DO MVP"
+STATUS_REJECTED = "REPROVADO NO BENCHMARK (Quality Gate Violado)"
 STATUS_INDETERMINATE = "INDETERMINADO (sem evidência transacional)"
+
+# ── Prontidão para produção ≠ aprovação no benchmark ──────────────────────────
+# O Quality Gate mede o que este benchmark consegue observar: 30 queries, 20 delas
+# transacionais, router treinado em 53 exemplos, tools mockadas. Chamar esse resultado
+# de "aprovado para produção bancária" seria estender a conclusão além da evidência —
+# a mesma classe de erro que reportar economia de custo sem taxa de sucesso.
+READINESS_MVP_BENCHMARK: str = "MVP_BENCHMARK_ONLY"
+READINESS_NOT_APPROVED: str = "NOT_APPROVED"
+READINESS_INSUFFICIENT_EVIDENCE: str = "INSUFFICIENT_EVIDENCE"
+
+PRODUCTION_READINESS_CAVEAT: str = (
+    "Aprovação restrita ao benchmark do MVP. Fora do escopo desta evidência: dados de "
+    "tráfego real, entradas adversariais, drift, fronteira de autorização, validação de "
+    "parâmetros da operação, MFA, idempotência, auditoria operacional e validação "
+    "independente da calibração."
+)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -142,6 +160,49 @@ def compute_savings(
     }
 
 
+def compute_fallback_economics(
+    smart_cost_usd: float,
+    baseline_cost_usd: float,
+    deferred_to_human: int,
+    human_fallback_cost_usd: Optional[float] = None,
+) -> Dict:
+    """Economia líquida quando o custo do atendimento humano entra na conta.
+
+    A economia nominal trata uma abstenção como se fosse grátis. Não é: ela vira um
+    atendimento humano. Enquanto esse custo não for medido, o número honesto de publicar
+    é o PONTO DE EQUILÍBRIO — o custo por atendimento desviado a partir do qual a economia
+    do pipeline zera:
+
+        breakeven = (custo_baseline - custo_pipeline) / n_desviadas
+
+    O break-even é derivado das medições, não arbitrado: não depende de estimar quanto
+    custa um atendente. `net_cost_savings_pct` só é preenchido quando o chamador fornece
+    `human_fallback_cost_usd` explicitamente, e nesse caso o valor é premissa do chamador,
+    não medição deste harness.
+    """
+    absolute_savings = baseline_cost_usd - smart_cost_usd
+    breakeven = (
+        absolute_savings / deferred_to_human if deferred_to_human > 0 else None
+    )
+
+    net_cost = net_savings_pct = None
+    if human_fallback_cost_usd is not None:
+        net_cost = smart_cost_usd + deferred_to_human * human_fallback_cost_usd
+        net_savings_pct = (
+            ((baseline_cost_usd - net_cost) / baseline_cost_usd) * 100.0
+            if baseline_cost_usd > 0
+            else 0.0
+        )
+
+    return {
+        "deferred_to_human": deferred_to_human,
+        "human_handling_cost_usd": human_fallback_cost_usd,
+        "human_fallback_breakeven_cost_usd": breakeven,
+        "net_smart_cost_usd": net_cost,
+        "net_cost_savings_pct": net_savings_pct,
+    }
+
+
 def _evaluate_quality_gate(
     task_success_rate: Optional[float],
     incorrect_executions: int,
@@ -154,6 +215,12 @@ def _evaluate_quality_gate(
       - INDETERMINADO: `task_success_rate` é None, ou seja, o benchmark não continha
         nenhuma query transacional. Ausência de evidência não é evidência de segurança;
         um benchmark sem cenário transacional NUNCA aprova um pipeline bancário.
+
+    `production_approved` responde "o pipeline passou neste benchmark?".
+    `production_readiness` responde "isso autoriza operação bancária real?" — e a resposta
+    nunca é sim aqui, no máximo MVP_BENCHMARK_ONLY. Os dois campos são distintos de
+    propósito: o primeiro é o gate exigido pela especificação, o segundo impede que a
+    aprovação no gate seja lida como prontidão operacional.
     """
     reasons = []
 
@@ -171,6 +238,8 @@ def _evaluate_quality_gate(
         return {
             "operational_status": STATUS_INDETERMINATE,
             "production_approved": False,
+            "production_readiness": READINESS_INSUFFICIENT_EVIDENCE,
+            "production_readiness_caveat": PRODUCTION_READINESS_CAVEAT,
             "quality_gate_reasons": reasons,
         }
 
@@ -184,6 +253,10 @@ def _evaluate_quality_gate(
     return {
         "operational_status": STATUS_APPROVED if production_approved else STATUS_REJECTED,
         "production_approved": production_approved,
+        "production_readiness": (
+            READINESS_MVP_BENCHMARK if production_approved else READINESS_NOT_APPROVED
+        ),
+        "production_readiness_caveat": PRODUCTION_READINESS_CAVEAT,
         "quality_gate_reasons": reasons,
     }
 
@@ -205,11 +278,27 @@ def run_harness(
     tools: List[Tool],
     eval_dataset: List[dict],
     k: int = 2,
+    min_relative_margin: float = MIN_RELATIVE_MARGIN,
+    human_fallback_cost_usd: Optional[float] = None,
 ) -> dict:
     """Executa o harness de avaliação com barreira de segurança pré-execução.
 
     Ver o docstring do módulo para a ordem dos guardas e para a fronteira entre a lógica
     de produção e o uso de `expected_tool` na avaliação offline.
+
+    Parâmetros
+    ----------
+    k : int
+        Número de CAPACIDADES distintas pedidas ao retriever (ver contrato em
+        `BaseToolRetriever.search`).
+    min_relative_margin : float
+        Limiar da guarda 3. Parametrizado para que a política de risco possa ser
+        exercitada e recalibrada sem editar o módulo — é uma política, não uma constante
+        física. Aumentar o valor troca cobertura por confirmações do cliente.
+    human_fallback_cost_usd : float, opcional
+        Custo assumido por query desviada para atendimento humano. Quando informado, o
+        relatório publica a economia LÍQUIDA. Quando ausente, publica apenas o ponto de
+        equilíbrio, que não depende de nenhuma premissa de custo.
     """
     labels = ["FAST_PATH", "AGENT"]
 
@@ -309,13 +398,13 @@ def run_harness(
                         "Retriever retornou zero candidatos com score >= min_score. "
                         "Nenhuma tool executada."
                     )
-                elif margin is not None and margin < MIN_RELATIVE_MARGIN:
+                elif margin is not None and margin < min_relative_margin:
                     # ── GUARDA 3: Margem entre candidatos ────────────────────
                     ambiguous_confirmations += 1
                     abstentions += 1
                     row["execution_status"] = "AMBIGUOUS_CONFIRMATION"
                     row["fallback_reason"] = (
-                        f"Margem relativa {margin:.3f} < {MIN_RELATIVE_MARGIN} entre "
+                        f"Margem relativa {margin:.3f} < {min_relative_margin} entre "
                         f"'{top_k_names[0]}' e '{top_k_names[1]}'. "
                         f"Confirmação do cliente requerida antes de executar."
                     )
@@ -386,6 +475,12 @@ def run_harness(
         "abstentions": abstentions,
         "human_fallbacks": human_fallbacks,
         "ambiguous_confirmations": ambiguous_confirmations,
+        "thresholds": {
+            "router_confidence": ROUTER_CONFIDENCE_THRESHOLD,
+            "retriever_min_score": RETRIEVER_MIN_SCORE,
+            "min_relative_margin": min_relative_margin,
+            "task_success_rate": TASK_SUCCESS_RATE_THRESHOLD,
+        },
         "incorrect_execution_rate": incorrect_execution_rate,
         "abstention_rate": abstention_rate,
         **quality_gate,
@@ -408,8 +503,12 @@ def run_harness(
                 if resolved_baseline_cost > 0
                 else 0.0
             ),
-            "deferred_to_human": abstentions,
-            "human_handling_cost_usd": None,  # não modelado neste MVP
+            **compute_fallback_economics(
+                smart_cost_usd=smart_cost_total,
+                baseline_cost_usd=baseline_cost_total,
+                deferred_to_human=abstentions,
+                human_fallback_cost_usd=human_fallback_cost_usd,
+            ),
         },
         "rows": rows,
     }
@@ -453,10 +552,22 @@ def print_report(report: dict) -> None:
         f"Economia de custo (só queries resolvidas): "
         f"{econ.get('cost_savings_pct_on_resolved', 0):.1f}%"
     )
-    print(
-        f"  ATENÇÃO: {econ.get('deferred_to_human', 0)} queries foram desviadas para humano. "
-        f"Esse custo não está modelado e não é economia."
-    )
+    deferred = econ.get("deferred_to_human", 0)
+    print(f"  ATENÇÃO: {deferred} queries foram desviadas para atendimento humano.")
+    breakeven = econ.get("human_fallback_breakeven_cost_usd")
+    if breakeven is not None:
+        print(
+            f"  Ponto de equilíbrio: a economia zera se cada desvio custar "
+            f"${breakeven:.5f} ou mais."
+        )
+    assumed = econ.get("human_handling_cost_usd")
+    if assumed is not None:
+        print(
+            f"  Cenário (premissa do chamador, não medição): ${assumed:.5f} por desvio "
+            f"-> economia líquida {econ.get('net_cost_savings_pct', 0):.1f}%"
+        )
+    else:
+        print("  Custo do atendimento humano não modelado — a economia acima é nominal.")
     print(f"Latência pipeline inteligente: {report['smart_pipeline']['total_latency_ms']:.1f} ms")
     print(f"Latência baseline: {report['baseline_always_llm']['total_latency_ms']:.1f} ms")
     print(f"Economia de latência: {report.get('latency_savings_pct', 0):.1f}%")
@@ -472,4 +583,7 @@ def print_report(report: dict) -> None:
         print("   Razoes de reprovacao:")
         for r in reasons:
             print(f"   [X] {r}")
+    # Ressalva obrigatória: passar no gate não é prontidão para operação bancária real.
+    print(f"   PRONTIDAO: {report.get('production_readiness', READINESS_INSUFFICIENT_EVIDENCE)}")
+    print(f"   {report.get('production_readiness_caveat', PRODUCTION_READINESS_CAVEAT)}")
     print(sep)

@@ -150,6 +150,7 @@ class ToolRetriever(BaseToolRetriever):
 
         # Camada taxonômica (populada em fit quando use_taxonomy=True)
         self._variant_to_canonical: Dict[str, str] = {}
+        self._modes: Dict[str, str] = {}
         self._intents: List[str] = []
         self._intent_vectorizer: Optional[TfidfVectorizer] = None
         self._intent_matrix = None
@@ -163,7 +164,11 @@ class ToolRetriever(BaseToolRetriever):
         o retriever nunca pode devolver um nome que não está em `self._tools`.
         """
         try:
-            from candidate_starter.taxonomy import CANONICAL_ALIASES, VARIANT_TO_CANONICAL
+            from candidate_starter.taxonomy import (
+                CANONICAL_ALIASES,
+                CAPABILITY_MODE,
+                VARIANT_TO_CANONICAL,
+            )
         except ImportError:  # taxonomia é opcional — degrada para lexical puro
             return
 
@@ -172,6 +177,9 @@ class ToolRetriever(BaseToolRetriever):
             variant: canonical
             for variant, canonical in VARIANT_TO_CANONICAL.items()
             if variant in catalog and canonical in catalog
+        }
+        self._modes = {
+            name: mode for name, mode in CAPABILITY_MODE.items() if name in catalog
         }
         self._intents = sorted(name for name in CANONICAL_ALIASES if name in catalog)
         if not self._intents:
@@ -186,6 +194,7 @@ class ToolRetriever(BaseToolRetriever):
         """Indexa o catálogo de tools e, se habilitada, a camada taxonômica."""
         self._tools = list(tools)
         self._variant_to_canonical = {}
+        self._modes = {}
         self._intents = []
         self._intent_vectorizer = None
         self._intent_matrix = None
@@ -216,6 +225,18 @@ class ToolRetriever(BaseToolRetriever):
             self._intent_vectorizer.transform([normalized_query]), self._intent_matrix
         )[0]
         return {name: float(s) for name, s in zip(self._intents, sims)}
+
+    def _query_direction(self, normalized_query: str) -> str:
+        """Direção do pedido ("read" / "write" / ""), a partir dos verbos da query.
+
+        Sinal de runtime puro: depende só do texto do usuário e da taxonomia. Vazio quando
+        a taxonomia está desligada — o modo lexical puro não tem noção de direção.
+        """
+        if not self._modes:
+            return ""
+        from candidate_starter.taxonomy import query_direction
+
+        return query_direction(normalized_query.split())
 
     def _collapse(self, lexical_scores) -> Dict[str, Tuple[float, str]]:
         """Agrupa o catálogo por capacidade, ficando com o maior score de cada grupo.
@@ -275,14 +296,26 @@ class ToolRetriever(BaseToolRetriever):
             intents = self._intent_scores(normalized_query)
             alpha = self._intent_weight
 
+        direction = self._query_direction(normalized_query)
+
         candidates = []
         for group, (lex_score, member) in groups.items():
             score = (1.0 - alpha) * lex_score + alpha * intents.get(group, 0.0)
-            if score >= effective_min_score:
-                candidates.append((score, group, member))
+            if score < effective_min_score:
+                continue
+            mode = self._modes.get(group, "")
+            # Uma LEITURA nunca pode resolver para uma ESCRITA. Este é o único caso
+            # descartado por completo, e não por simetria: perguntar e receber uma
+            # alteração no cadastro é dano; pedir alteração e receber uma consulta é
+            # apenas uma tarefa não cumprida, tratada por rebaixamento abaixo.
+            if direction == "read" and mode == "write":
+                continue
+            conflicting = bool(direction) and bool(mode) and mode != direction
+            candidates.append((conflicting, score, group, member))
 
-        # Desempate determinístico: score decrescente, nome da capacidade alfabético.
-        candidates.sort(key=lambda item: (-item[0], item[1]))
+        # Ordenação: candidatos na direção pedida primeiro; depois score decrescente;
+        # desempate determinístico pelo nome da capacidade.
+        candidates.sort(key=lambda item: (item[0], -item[1], item[2]))
 
         matches = [
             ToolMatch(
@@ -290,7 +323,7 @@ class ToolRetriever(BaseToolRetriever):
                 score=score,
                 matched_variant=member if member != group else None,
             )
-            for score, group, member in candidates[: min(k, len(candidates))]
+            for _, score, group, member in candidates[: min(k, len(candidates))]
         ]
         return RetrievalResult(
             matches=matches, latency_ms=(time.perf_counter() - start) * 1000.0

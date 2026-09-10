@@ -154,3 +154,79 @@ def test_taxonomy_no_side_effects_on_unrelated_tools():
     assert len(res.matches) >= 1
     assert res.matches[0].name == "enviar_pix"
 
+
+
+# ── Estabilidade e contrato de capacidade ────────────────────────────────────
+
+def test_ranking_is_stable_under_catalog_reordering():
+    """A ordem das linhas do registry não pode influenciar a decisão.
+
+    O catálogo é um arquivo JSON: uma reordenação (merge, regeneração, ordenação
+    alfabética) não é uma mudança de domínio e não pode mover uma escrita para o topo.
+    O desempate por nome existe exatamente para isso — este teste é a prova.
+    """
+    import random
+
+    tools = load_tools()
+    shuffled = tools[:]
+    random.Random(20260910).shuffle(shuffled)
+    assert [t.name for t in shuffled] != [t.name for t in tools], "embaralhamento não ocorreu"
+
+    queries = [
+        "Quero saber meu saldo",
+        "Me manda o codigo de barras pra pagar",
+        "Perdi meu cartao, bloqueia agora",
+        "Quero mudar o e-mail vinculado à minha conta",
+    ]
+
+    def ranking(catalog):
+        r = ToolRetriever(min_score=0.10, use_taxonomy=True).fit(catalog)
+        return [
+            [(m.name, round(m.score, 12)) for m in r.search(q, k=3).matches] for q in queries
+        ]
+
+    assert ranking(tools) == ranking(shuffled)
+
+
+def test_matched_variant_is_the_executable_endpoint():
+    """Capacidade canônica e endpoint executável são coisas distintas.
+
+    `name` responde "qual é a intenção"; `matched_variant` responde "qual endpoint casou
+    com o pedido". Um runtime real precisa do segundo. O contrato: quando presente,
+    `matched_variant` é sempre uma tool real do catálogo e nunca é igual a `name`.
+    """
+    from candidate_starter.taxonomy import VARIANT_TO_CANONICAL
+
+    catalog = {t.name for t in load_tools()}
+    r = ToolRetriever(min_score=0.10, use_taxonomy=True).fit(load_tools())
+
+    match = r.search("Me manda o boleto da fatura em PDF no meu email", k=1).matches[0]
+    assert match.name == "consultar_fatura"
+    assert match.matched_variant in catalog, "a variante precisa ser um endpoint real"
+    assert match.matched_variant != match.name
+    assert VARIANT_TO_CANONICAL[match.matched_variant] == match.name
+
+    # Contraprova: `atualizar_email` não declara variantes, então a própria canônica é o
+    # endpoint executável e não há variante a reportar.
+    direct = r.search("Quero mudar meu email", k=1).matches[0]
+    assert direct.name == "atualizar_email"
+    assert direct.matched_variant is None
+
+    # O contrato vale para TODO resultado, não só para os dois casos acima.
+    for query in ("Perdi meu cartao", "Quero saber meu saldo", "Qual meu limite"):
+        for m in r.search(query, k=3).matches:
+            if m.matched_variant is not None:
+                assert m.matched_variant in catalog
+                assert VARIANT_TO_CANONICAL[m.matched_variant] == m.name
+
+
+def test_query_made_only_of_functional_words_abstains():
+    """Query reduzida a palavras funcionais não pode pontuar acima do limiar.
+
+    Complementa a query fora de domínio: aqui não há sequer conteúdo a interpretar.
+    Sem a lista de stopwords, "a" e "da" bastavam para atravessar min_score, porque uma
+    query curta tem norma L2 pequena e dois casamentos funcionais dominam o cosseno.
+    """
+    r = ToolRetriever(min_score=0.10, use_taxonomy=True).fit(load_tools())
+    for query in ("a de da o para com", "qual e o que", "por que de uma"):
+        assert r.search(query, k=2).matches == [], f"'{query}' deveria abster"

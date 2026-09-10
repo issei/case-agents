@@ -3,10 +3,11 @@
 > **Implementação de Referência para Agente Bancário sob a Engenharia da Confiança**  
 > *Baseada no Intentional Systems Model (ISM v1.0) e nos princípios de Spec-Driven Development.*
 
-![Testes](https://img.shields.io/badge/Testes-23%2F23%20Aprovados-success)
+![Testes](https://img.shields.io/badge/Testes-71%20Aprovados-success)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![Economia de Custo](https://img.shields.io/badge/Economia%20de%20Custo-77.8%25-brightgreen)
-![Redução de Latência](https://img.shields.io/badge/Redu%C3%A7%C3%A3o%20de%20Lat%C3%AAncia-95.0%25-brightgreen)
+![Redução de Latência](https://img.shields.io/badge/Redu%C3%A7%C3%A3o%20de%20Lat%C3%AAncia-92.6%25-brightgreen)
+![Execuções Incorretas](https://img.shields.io/badge/Execu%C3%A7%C3%B5es%20Incorretas-0-success)
 ![Acurácia Router](https://img.shields.io/badge/Acur%C3%A1cia%20Router-100%25-brightgreen)
 
 ---
@@ -95,7 +96,7 @@ flowchart LR
     R[1. Refinamento<br/>Diagnóstico & Gotchas] --> S[2. Especificação<br/>Contratos & Invariantes]
     S --> P[3. Planejamento<br/>ADRs & Roadmap]
     P --> E[4. Execução<br/>Código Enxuto & Modular]
-    E --> T[5. Testes<br/>54 Testes & Benchmark]
+    E --> T[5. Testes<br/>71 Testes & Benchmark]
 ```
 
 ### 1. Refinamento (Discovery & Diagnóstico dos Gotchas)
@@ -125,33 +126,38 @@ A implementação em `candidate_starter/` seguiu rigorosamente os princípios de
 |---|---|---|
 | **Normalizador** | [`common/normalization.py`](common/normalization.py) | Função pura `normalize(text)` compartilhada: Unicode NFKD, remoção de diacríticos, minúsculas, remoção de caracteres não-alfanuméricos e colapso de espaços. |
 | **Router** | [`candidate_starter/router.py`](candidate_starter/router.py) | `TfidfVectorizer` + `LogisticRegression` envolvida em `CalibratedClassifierCV(method="sigmoid")`, para que `confidence` seja uma estimativa de acerto e não uma margem encolhida pela regularização (ADR-007). Latência via `time.perf_counter()`. |
-| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Recuperação multi-campo: cosseno TF-IDF sobre `name + description + category` combinado ao glossário de domínio como campo separado (`0.5 · lexical + 0.5 · intent`). Duplicatas semânticas do catálogo colapsam na capacidade canônica (ADR-006). Desempate estável por `name`; `min_score` para abstention. |
-| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Três guardas pré-execução (confiança do router, score mínimo, margem entre candidatos) e métricas determinísticas: acurácia, matriz de confusão, Hit Rate@1/@k, cobertura, abstenção e Quality Gate com estado `INDETERMINADO`. |
-| **Taxonomia** | [`candidate_starter/taxonomy.py`](candidate_starter/taxonomy.py) | Governança do catálogo: 12 capacidades canônicas, seu glossário de vocabulário PT-BR e as 34 ferramentas operacionais que as realizam. Invariantes de autoria verificadas por testes (ADR-006). |
+| **Retriever** | [`candidate_starter/retrieval.py`](candidate_starter/retrieval.py) | Recuperação multi-campo: cosseno TF-IDF sobre `name + description + category` combinado ao glossário de domínio como campo separado (`0.5 · lexical + 0.5 · intent`). Duplicatas semânticas do catálogo colapsam na capacidade canônica (ADR-006). Uma query de leitura nunca recupera uma capacidade de escrita (ADR-008). Desempate estável por `name`; `min_score` para abstention. |
+| **Harness** | [`candidate_starter/harness.py`](candidate_starter/harness.py) | Guardas pré-execução (confiança do router, score mínimo, margem entre candidatos — esta parametrizável) e métricas determinísticas: acurácia, matriz de confusão, Hit Rate@1/@k, cobertura, abstenção, economia líquida com ponto de equilíbrio do custo humano e Quality Gate tri-estado com `production_readiness`. |
+| **Taxonomia** | [`candidate_starter/taxonomy.py`](candidate_starter/taxonomy.py) | Governança do catálogo: 14 capacidades canônicas, seu glossário PT-BR verb-forward, a direção (`read`/`write`) de cada uma e as 45 ferramentas operacionais que as realizam. Sete invariantes de autoria verificadas por testes (ADR-006, ADR-008). |
 | **Orquestrador** | [`candidate_starter/run_case.py`](candidate_starter/run_case.py) | Script de execução de ponta a ponta que lê as fontes de dados, treina os componentes, avalia sobre o dataset de teste e serializa o relatório JSON formatado. |
 
 ### 5. Testes & Verificação Contínua
-Foi construída uma bateria de **54 testes** em [`candidate_starter/tests/`](candidate_starter/tests/), alcançando **100% de aprovação**:
+Foi construída uma bateria de **71 testes** em [`candidate_starter/tests/`](candidate_starter/tests/), alcançando **100% de aprovação**:
 - **Testes de Sanidade Obrigatórios**: Validação dos contratos do Router e do Retriever com dados de exemplo.
 - **Testes de Invariantes de Normalização**: Comprovação de que `"Cartão"`, `"cartao"` e `"CARTÃO"` retornam exatamente as mesmas ferramentas com os mesmos scores.
 - **Testes de Casos de Borda e Erro**: Lançamento de `RuntimeError` para predições antes do `fit()`, rejeição de listas vazias, verificação de paridade de tamanho, tratamento de strings vazias ou compostas apenas por espaços.
 - **Testes de Resiliência do Harness**: Validação de matrizes de confusão sem dados, divisões por zero em baseline nulo e hit rate em listas vazias.
 - **Testes de Barreira de Segurança**: Prova de que `mock_tool_execution` **nunca** é chamada quando a confiança está abaixo do limiar, quando nenhum candidato passa do `min_score` ou quando a margem entre top-1 e top-2 é insuficiente. São testes de ausência de efeito — é o que separa "recuperou mal" de "executou a operação errada na conta".
-- **Testes de Integridade da Taxonomia**: Toda capacidade e toda variante existem no catálogo; nenhuma ferramenta pertence a duas capacidades; leitura e escrita nunca são agrupadas.
+- **Testes de Integridade da Taxonomia**: Toda capacidade e toda variante existem no catálogo; nenhuma ferramenta pertence a duas capacidades; leitura e escrita nunca são agrupadas; toda capacidade declara sua direção e toda variante herda a da sua canônica.
+- **Testes de Direção (leitura vs escrita)**: Nenhuma query de consulta pode recuperar uma capacidade que altera estado — a falha mais cara do domínio, e a que a guarda de margem comprovadamente **não** pegava (ADR-008).
+- **Testes de Economia Líquida**: O ponto de equilíbrio do custo de atendimento humano é derivado das medições, e a economia fica negativa quando o custo do desvio ultrapassa esse ponto — impede que abstenção seja vendida como eficiência.
+- **Testes de Procedência do Relatório**: `reports/candidate_report.json` declara commit, timestamp, seed e versões, e suas decisões são recomputadas contra o código atual — um relatório versionado que envelhece em silêncio falha o teste.
+- **Teste de Estabilidade do Ranking**: Embaralhar a ordem do catálogo não muda nenhuma decisão.
+- **Teste de Distribuição de Confiança**: A confiança do router não pode estar nem saturada em 1.0 nem achatada — sem dispersão, o limiar de 0.75 é decorativo.
 - **Teste de Generalização fora do Dataset**: 12 paráfrases com vocabulário ausente do `eval_dataset.json`, para detectar ajuste ao gabarito (medido: 9/12 em top-1, 11/12 em top-2).
 
 ---
 
 ## 🚀 Como Executar a Demonstração (1 Clique)
 
-Para facilitar a validação e avaliação do case, foram criados scripts de execução automatizada em 1 clique que validam o ambiente, rodam todos os 23 testes unitários e geram o relatório final:
+Para facilitar a validação e avaliação do case, foram criados scripts de execução automatizada em 1 clique que validam o ambiente, rodam os 71 testes e geram o relatório final:
 
 ### No Windows:
 Basta executar no terminal:
 ```cmd
 run_demo.bat
 ```
-*(Valida o ambiente virtual `.venv`, executa a suíte de 23 testes com saída colorida e executa o benchmark).*
+*(Valida o ambiente virtual `.venv`, executa a suíte de 71 testes com saída colorida e executa o benchmark).*
 
 ### No Linux / macOS:
 ```bash
@@ -189,29 +195,34 @@ HARNESS DE AVALIAÇÃO - Router & Tool Retrieval
 Queries avaliadas: 30
 Acurácia do Router: 100.0%
 Matriz de confusão: {'FAST_PATH': {'FAST_PATH': 10, 'AGENT': 0}, 'AGENT': {'FAST_PATH': 0, 'AGENT': 20}}
-Hit Rate@1 do Retriever: 95.0%
+Hit Rate@1 do Retriever: 100.0%
 Hit Rate@2 do Retriever: 100.0%
-Taxa de Execução Correta (Top-1 executado): 95.0%
-Cobertura transacional (executou algo): 95.0%
+Taxa de Execução Correta (Top-1 executado): 100.0%
+Cobertura transacional (executou algo): 100.0%
 --------------------------------------------------------------------
-Execuções corretas          : 19
+Execuções corretas          : 20
 Execuções incorretas (risco): 0
-Abstenções (total)          : 1
+Abstenções (total)          : 0
   - fallback humano (confiança baixa): 0
-  - confirmação por ambiguidade      : 1
+  - confirmação por ambiguidade      : 0
 Taxa de execução incorreta  : 0.0%
-Taxa de abstenção           : 5.0%
+Taxa de abstenção           : 0.0%
 --------------------------------------------------------------------
-Custo pipeline inteligente: $0.19003
+Custo pipeline inteligente: $0.20003
 Custo baseline (tudo pro LLM): $0.90000
-Economia de custo (total): 78.9%
-Economia de custo (só queries resolvidas): 78.2%
-  ATENÇÃO: 1 queries foram desviadas para humano. Esse custo não está modelado e não é economia.
-Latência pipeline inteligente: 146.7 ms
-Latência baseline: 2660.0 ms
-Economia de latência: 94.5%
+Economia de custo (total): 77.8%
+Economia de custo (só queries resolvidas): 77.8%
+  ATENÇÃO: 0 queries foram desviadas para atendimento humano.
+  Cenário (premissa do chamador, não medição): $0.50000 por desvio -> economia líquida 77.8%
+Latência pipeline inteligente: 203.6 ms
+Latência baseline: 2741.3 ms
+Economia de latência: 92.6%
 ====================================================================
-[OK]  STATUS OPERACIONAL: APROVADO PARA PRODUÇÃO
+[OK]  STATUS OPERACIONAL: APROVADO NO BENCHMARK DO MVP
+   PRONTIDAO: MVP_BENCHMARK_ONLY
+   Aprovação restrita ao benchmark do MVP. Fora do escopo desta evidência: dados de tráfego
+   real, entradas adversariais, drift, fronteira de autorização, validação de parâmetros da
+   operação, MFA, idempotência, auditoria operacional e validação independente da calibração.
 ====================================================================
 ```
 
@@ -219,30 +230,37 @@ Economia de latência: 94.5%
 (`common/mock_llm.py`); ela varia alguns pontos percentuais entre execuções. Todas as demais
 métricas são determinísticas — há teste dedicado de reprodutibilidade.*
 
+> **`production_approved` e `production_readiness` respondem perguntas diferentes.** O primeiro
+> é o Quality Gate exigido pelo case: *este pipeline passou neste benchmark?* O segundo é o
+> teto da conclusão: `MVP_BENCHMARK_ONLY`, nunca "pronto para produção bancária". Existe um
+> teste que falha se alguém ampliar o rótulo sem ampliar a evidência
+> (`test_approval_in_the_benchmark_never_claims_production_readiness`).
+
 ### Evolução medida
 
-| Métrica | Commit `fc830dc` | Estado atual | Origem da mudança |
-|---|---:|---:|---|
-| Testes | 35 | **54** | novos testes de taxonomia, guardas e benchmark |
-| Acurácia do router | 100% | **100%** | — |
-| Hit Rate@2 do retriever | 35% | **100%** | ADR-006 |
-| Hit Rate@1 do retriever | — | **95%** | ADR-006 |
-| Execução correta top-1 | 20% (4/20) | **95%** (19/20) | ADR-006 + ADR-007 |
-| **Execuções incorretas** | **7** | **0** | guarda de margem (ADR-007) |
-| Fallback por baixa confiança | 9 | **0** | calibração de probabilidade (ADR-007) |
-| Confirmação por ambiguidade | — | **1** | guarda de margem (ADR-007) |
-| Taxa de abstenção | 45% | **5%** | — |
-| Economia de custo | 87,8% | **78,9%** | **queda esperada — ver abaixo** |
-| Status operacional | REPROVADO | **APROVADO** | Quality Gate |
+| Métrica | `fc830dc` | `c8f30d2` | Estado atual | Origem da mudança |
+|---|---:|---:|---:|---|
+| Testes | 35 | 54 | **71** | integridade, direção, snapshot, custo líquido |
+| Acurácia do router | 100% | 100% | **100%** | — |
+| Hit Rate@2 do retriever | 35% | 100% | **100%** | ADR-006 |
+| Hit Rate@1 do retriever | — | 95% | **100%** | ADR-006 + ADR-008 |
+| Execução correta top-1 | 20% (4/20) | 95% (19/20) | **100%** (20/20) | ADR-006/007/008 |
+| **Execuções incorretas** | **7** | **0** | **0** | guardas pré-execução |
+| **Leitura resolvendo escrita** | não medido | **sim (margem 0.47)** | **impossível** | ADR-008 |
+| Fallback por baixa confiança | 9 | 0 | **0** | calibração (ADR-007) |
+| Confirmação por ambiguidade | — | 1 | **0** | resolvida pela direção (ADR-008) |
+| Economia de custo | 87,8% | 78,9% | **77,8%** | ver nota abaixo |
+| Status | REPROVADO | APROVADO | **APROVADO NO BENCHMARK** | rótulo corrigido |
 
-> **A economia caiu e isso está correto.** Os 87,8% anteriores vinham de 9 abstenções que não
-> deveriam existir: o router acertava as 30 decisões, mas 9 ficavam abaixo do limiar de 0.75 por
-> subconfiança de calibração. Cada abstenção evitava uma chamada de LLM e inflava a economia
-> enquanto a taxa de sucesso era 20%. Cobrir 95% das queries transacionais custa mais dinheiro —
-> é o trade-off correto, e por isso o relatório passou a publicar `cost_savings_pct_on_resolved`
-> e `deferred_to_human` separadamente.
+> **A economia caiu duas vezes, e as duas quedas estão corretas.** Os 87,8% de `fc830dc` vinham
+> de 9 abstenções indevidas com 20% de sucesso — cada abstenção evitava uma chamada de LLM e
+> inflava o número. Os 78,9% de `c8f30d2` ainda continham 1 abstenção. Hoje o pipeline resolve
+> 20 de 20 queries transacionais e paga LLM por todas elas: 77,8% é o que custa cobrir tudo.
+> **Economia de custo só é comparável entre configurações com a mesma taxa de abstenção** — por
+> isso o relatório publica `cost_savings_pct_on_resolved`, `deferred_to_human` e o ponto de
+> equilíbrio do custo humano lado a lado.
 
-### As três correções
+### As quatro correções
 
 **1. O catálogo tem duplicatas semânticas — não era problema de vetorização**
 ([ADR-006](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md))
@@ -271,27 +289,56 @@ limiar que rejeita 45% das decisões corretas e nenhuma incorreta não compra se
 cobertura. A causa é subconfiança por regularização L2 sobre 53 exemplos de treino.
 
 A correção **não** foi afrouxar `C` até os números passarem (isso é mover a trave): foi aplicar
-Platt scaling (`CalibratedClassifierCV(method="sigmoid", cv=5)`) e **restaurar `C=1.0`**, o
-padrão, para que `RouteResult.confidence` seja uma estimativa da probabilidade de acerto e o
-limiar de 0.75 signifique alguma coisa.
+Platt scaling (`CalibratedClassifierCV(method="sigmoid")`) e **restaurar `C=1.0`**, o padrão,
+para que `RouteResult.confidence` seja uma estimativa da probabilidade de acerto e o limiar de
+0.75 signifique alguma coisa.
 
 **3. Top-1 era executado sem verificar se era decisão ou empate**
 ([ADR-007](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md))
 
-Terceiro guarda: `(s1 - s2) / s1 < 0.25` → `AMBIGUOUS_CONFIRMATION`, sem execução. É exatamente
-o que salva a única query fora do top-1:
+Terceiro guarda: `(s1 - s2) / s1 < 0.25` → `AMBIGUOUS_CONFIRMATION`, sem execução. O limiar é
+parâmetro de `run_harness`, não constante escondida — política de risco precisa ser recalibrável
+e testável. O relatório registra, em `thresholds`, sob qual política cada decisão foi tomada.
+
+**4. Uma leitura podia resolver para uma escrita, com margem folgada**
+([ADR-008](docs/adr/0008-guarda-de-direcao-leitura-escrita.md))
+
+O defeito mais caro do domínio, encontrado por um teste que a reavaliação pediu. Medição antes da
+correção:
 
 ```
-Query : "Quero mudar o e-mail vinculado à minha conta"
-Top-2 : consultar_email_vinculado_conta (0.423)  |  atualizar_email (0.361)
-Margem: 0.147 < 0.25  ->  AMBIGUOUS_CONFIRMATION (nenhuma tool executada)
+Query : "Qual e o email cadastrado na minha conta?"   (uma LEITURA)
+Top-2 : atualizar_email (0.4795)  |  confirmar_email_cadastrado (0.2554)
+Margem: 0.47  >>  0.25  ->  EXECUTA a escrita. A guarda de margem não pega.
 ```
 
-Uma leitura e uma escrita empatadas sobre o mesmo dado. O sistema pede confirmação em vez de
-apostar. As 19 decisões corretas têm margem relativa entre 0.55 e 0.72 — o limiar não está
-espremido entre acerto e erro.
+O cliente pergunta e o agente altera o cadastro. E a guarda de margem é impotente aqui, porque o
+erro **não é um empate** — é uma decisão confiante e errada, exatamente o cenário que a
+reavaliação antecipou em §3.4.
 
-> Relatório estruturado completo em [**`reports/candidate_report.json`**](reports/candidate_report.json).
+Duas causas, ambas estruturais:
+
+- **Capacidade sem glossário era penalizada em 50%.** Com `score = 0.5·lexical + 0.5·intent`,
+  uma tool fora da taxonomia recebia `intent = 0` — ausência de dado tratada como evidência de
+  irrelevância. `consultar_email_vinculado_conta` perdia por não ter vocabulário declarado, não
+  por ser menos relevante. Corrigido declarando os pares leitura/escrita como capacidades.
+- **Nenhum peso resolve o resto.** `consultar_email_vinculado_conta` marca **0.85** de cosseno
+  contra *"Quero mudar o e-mail vinculado à minha conta"*: o nome da tool reproduz o objeto do
+  pedido. A única palavra que separa as duas capacidades é o **verbo**, um token entre dez num
+  saco de palavras. Não existe alpha que vença 0.65 de diferença de cosseno.
+
+A direção precisa entrar como **sinal declarado**, não inferido de similaridade textual. Cada
+capacidade declara `mode: read | write`; a direção do pedido vem dos verbos da query. Uma
+leitura **nunca** recupera uma escrita (descarte total); um pedido de escrita rebaixa as leituras
+sem descartá-las — a assimetria é deliberada: alterar o cadastro de quem só perguntou é dano,
+consultar para quem pediu alteração é apenas tarefa não cumprida.
+
+O sinal é de runtime puro — verbo da query + taxonomia, nada de `expected_tool`. Efeito colateral
+medido: a query de e-mail que antes vivia da guarda de margem agora resolve corretamente, e o
+benchmark vai de 19/20 para 20/20.
+
+> Relatório estruturado completo em [**`reports/candidate_report.json`**](reports/candidate_report.json),
+> com bloco `snapshot` declarando commit, timestamp, seed e versões de dependências.
 
 ---
 
@@ -301,32 +348,58 @@ espremido entre acerto e erro.
 > executável**. Os artefatos de governança ([`APM.yml`](APM.yml), OmniRoute Gateway) são a
 > **especificação arquitetural alvo para produção**, não infraestrutura ativa nesta pasta.
 
-**1. "Aprovado para produção" significa aprovado *neste* benchmark.** São 30 queries de avaliação
-e 53 exemplos de treino do router. Acurácia de 100% com esse volume diz pouco sobre tráfego real.
-O Quality Gate confirma que o pipeline satisfaz os critérios do exercício — não que esteja pronto
-para um banco.
+**1. Aprovado *neste benchmark* — não aprovado para operação bancária.** São 30 queries de
+avaliação, 20 delas transacionais, e 53 exemplos de treino do router. O relatório publica isso
+como `production_readiness = "MVP_BENCHMARK_ONLY"` em vez de deixar `production_approved: true`
+ser lido como prontidão. Fora do escopo desta evidência: tráfego real, entradas adversariais,
+drift, fronteira de autorização, validação de parâmetros da operação, MFA, idempotência e
+auditoria operacional.
 
 **2. Recuperação lexical tem teto em paráfrase.** O teste
 `tests/test_taxonomy.py::test_paraphrases_outside_dataset_generalize` avalia 12 queries escritas
 com vocabulário **ausente** do dataset oficial, justamente para detectar ajuste ao gabarito.
-Resultado medido: **9/12 em top-1, 11/12 em top-2**. O caso que falha —
+Resultado medido: **9/12 em top-1, 11/12 em top-2** — inalterado pelas correções de direção, o
+que é a evidência de que elas não foram ajustadas ao gabarito. O caso que falha —
 *"Fui morar em outro bairro, cadastra o novo lugar"* — usa palavras que não existem no catálogo
 nem no glossário. Nenhum ajuste de peso resolve isso: a resposta é recuperação densa (embeddings)
 com reranker, conforme a trilha de produção.
 
-**3. A taxonomia é mantida à mão.** 12 capacidades e 34 variantes. Escalar para milhares de
-ferramentas exige derivação assistida (clusterização de embeddings + revisão humana) e governança
-no ciclo de vida do registry. As invariantes automatizadas reduzem, mas não eliminam, esse custo.
+**3. A guarda de direção só protege o que está declarado.** 59 das 285 ferramentas do catálogo
+têm `mode` declarado (14 capacidades canônicas + 45 variantes). As outras 226 têm direção
+desconhecida e o retriever, por segurança, **não impõe restrição** sobre elas — uma escrita não
+declarada ainda pode ser recuperada por uma query de leitura. A cobertura da guarda cresce com a
+taxonomia, não sozinha. Em produção o `mode` deveria vir do próprio registry (é metadado do
+endpoint, não da taxonomia) e ser obrigatório no cadastro de cada ferramenta.
 
-**4. `MIN_RELATIVE_MARGIN = 0.25` é global, mas o risco não é.** Bloquear um cartão por engano é
-reversível; transferir dinheiro não é. Em produção o limiar deveria ser por classe de risco da
-ferramenta, não único para o catálogo inteiro.
+**4. A taxonomia é mantida à mão.** 14 capacidades e 45 variantes sobre 285 ferramentas. Escalar
+para milhares exige derivação assistida (clusterização de embeddings + revisão humana) e
+governança no ciclo de vida do registry. As sete invariantes automatizadas reduzem, mas não
+eliminam, esse custo.
 
-**5. O custo do fallback humano não está modelado.** `economics.human_handling_cost_usd` é `null`
-de propósito. Enquanto ele não existir, comparar economia entre configurações com taxas de
-abstenção diferentes não é honesto.
+**5. `MIN_RELATIVE_MARGIN = 0.25` é global, mas o risco não é.** Bloquear um cartão por engano é
+reversível; transferir dinheiro não é. O limiar já é parâmetro de `run_harness` — o que falta é
+torná-lo função da classe de risco da ferramenta, não único para o catálogo inteiro.
 
-**6. Duas falhas de tokenização apareceram ao medir, não ao ler o código** — e ambas eram de
+**6. O benchmark oficial não exercita mais as guardas 2 e 3.** Com 20/20 execuções corretas e
+zero abstenções, `ABSTAIN_LOW_SCORE` e `AMBIGUOUS_CONFIRMATION` não disparam em nenhuma linha do
+dataset. Isso é bom operacionalmente e **ruim como evidência**: as guardas passam a ser provadas
+apenas pelos testes unitários de ausência de efeito
+([`test_harness_guards.py`](candidate_starter/tests/test_harness_guards.py)), não pela execução
+oficial. Um benchmark que nunca aciona a rede de segurança não demonstra que ela funciona.
+
+**7. O custo do fallback humano é premissa, não medição.** `run_case` publica um cenário de
+US$ 0,50 por desvio, claramente rotulado. O número **derivado** e confiável é o
+`human_fallback_breakeven_cost_usd`: o custo por atendimento a partir do qual a economia zera.
+Ele sai das medições e não depende de estimar quanto custa um atendente.
+
+**8. A folga de calibração do router é de 0.017.** A query `AGENT` menos confiante marca 0.7674
+contra um limiar de 0.75. A calibração é validada no mesmo universo de dados usado para as
+decisões de modelagem — sem conjunto independente, sem Brier score, sem reliability curve. Uma
+mudança pequena no dataset de treino pode empurrar essa query para baixo do limiar.
+`test_router_confidence_distribution_is_usable_as_a_risk_policy` protege a propriedade (nem
+subconfiança nem saturação), mas não substitui validação independente.
+
+**9. Duas falhas de tokenização apareceram ao medir, não ao ler o código** — e ambas eram de
 segurança, não de recall:
 
 - Sem lista de stopwords PT-BR, a query sem sentido *"qual a capital da mongolia interior"*
@@ -342,9 +415,9 @@ query, preservando a invariante de normalização única.
 ### Fronteira entre produção e avaliação
 
 `expected_tool` é usado **exclusivamente** pela camada de avaliação offline, para rotular o
-resultado depois que a decisão já foi tomada. Os três guardas pré-execução usam apenas sinais
-disponíveis em runtime — confiança do router, score do retriever e margem entre candidatos.
-Nenhum deles consulta o gabarito.
+resultado depois que a decisão já foi tomada. As guardas pré-execução usam apenas sinais
+disponíveis em runtime — confiança do router, score do retriever, margem entre candidatos e
+direção declarada pelo verbo da query. Nenhuma delas consulta o gabarito.
 
 ---
 
@@ -366,6 +439,7 @@ As escolhas técnicas e seus respectivos trade-offs estão documentados em [`doc
 - [**ADR-005: Alinhamento com o Manifesto APM e OmniRoute Gateway Pattern**](docs/adr/0005-alinhamento-apm-e-omniroute-gateway.md)
 - [**ADR-006: Taxonomia de Capacidades, Colapso de Duplicatas e Recuperação Multi-Campo**](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md)
 - [**ADR-007: Calibração de Probabilidade do Router e Guarda de Margem**](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md)
+- [**ADR-008: Guarda de Direção (Leitura vs Escrita) na Seleção de Capacidades**](docs/adr/0008-guarda-de-direcao-leitura-escrita.md)
 
 ### 3. Base de Conhecimento (OKF Agent Memory)
 Artigos conceituais no padrão **Open Knowledge Format (Google OKF v0.2)** em [`docs/knowledge/`](docs/knowledge/):

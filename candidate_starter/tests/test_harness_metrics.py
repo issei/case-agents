@@ -2,6 +2,10 @@
 import pytest
 
 from candidate_starter.harness import (
+    READINESS_INSUFFICIENT_EVIDENCE,
+    READINESS_MVP_BENCHMARK,
+    READINESS_NOT_APPROVED,
+    compute_fallback_economics,
     compute_precision_at_k,
     compute_router_metrics,
     compute_savings,
@@ -101,6 +105,63 @@ def test_quality_gate_none_task_success_rate_is_indeterminate():
     assert qg["production_approved"] is False
     assert "INDETERMINADO" in qg["operational_status"]
     assert any("transacion" in r.lower() for r in qg["quality_gate_reasons"])
+
+
+def test_approval_in_the_benchmark_never_claims_production_readiness():
+    """Passar no gate é evidência sobre ESTE benchmark, não sobre operação bancária real.
+
+    O rótulo mais forte que o harness pode emitir é MVP_BENCHMARK_ONLY. Se algum dia esta
+    asserção falhar, alguém ampliou a conclusão sem ampliar a evidência.
+    """
+    approved = _evaluate_quality_gate(task_success_rate=1.0, incorrect_executions=0)
+    assert approved["production_approved"] is True
+    assert approved["production_readiness"] == READINESS_MVP_BENCHMARK
+    assert approved["production_readiness_caveat"].strip()
+
+    rejected = _evaluate_quality_gate(task_success_rate=0.5, incorrect_executions=0)
+    assert rejected["production_readiness"] == READINESS_NOT_APPROVED
+
+    indeterminate = _evaluate_quality_gate(task_success_rate=None, incorrect_executions=0)
+    assert indeterminate["production_readiness"] == READINESS_INSUFFICIENT_EVIDENCE
+
+
+# ── Custo líquido com fallback humano ────────────────────────────────────────
+
+def test_fallback_breakeven_is_derived_without_assuming_a_human_cost():
+    """Sem premissa de custo, o número publicável é o ponto de equilíbrio."""
+    econ = compute_fallback_economics(
+        smart_cost_usd=0.20, baseline_cost_usd=0.90, deferred_to_human=7
+    )
+    # (0.90 - 0.20) / 7 = 0.10 por desvio zera a economia.
+    assert pytest.approx(econ["human_fallback_breakeven_cost_usd"], rel=1e-9) == 0.10
+    assert econ["human_handling_cost_usd"] is None
+    assert econ["net_cost_savings_pct"] is None
+
+
+def test_fallback_cost_above_breakeven_turns_savings_negative():
+    """A economia nominal trata abstenção como grátis; a líquida não. Este é o teste que
+    impede o relatório de vender desvio ao humano como eficiência."""
+    econ = compute_fallback_economics(
+        smart_cost_usd=0.20,
+        baseline_cost_usd=0.90,
+        deferred_to_human=7,
+        human_fallback_cost_usd=0.50,  # bem acima do break-even de 0.10
+    )
+    assert econ["net_smart_cost_usd"] == pytest.approx(0.20 + 7 * 0.50)
+    assert econ["net_cost_savings_pct"] < 0, (
+        "Com custo humano acima do ponto de equilíbrio, a economia líquida é negativa"
+    )
+
+
+def test_no_deferral_means_no_breakeven_and_net_equals_nominal():
+    econ = compute_fallback_economics(
+        smart_cost_usd=0.20,
+        baseline_cost_usd=0.90,
+        deferred_to_human=0,
+        human_fallback_cost_usd=0.50,
+    )
+    assert econ["human_fallback_breakeven_cost_usd"] is None
+    assert econ["net_smart_cost_usd"] == pytest.approx(0.20)
 
 
 # ── Harness End-to-End ────────────────────────────────────────────────────────

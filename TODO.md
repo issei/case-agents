@@ -138,3 +138,64 @@ zero execuções incorretas, status APROVADO. Detalhamento em
   - [x] Substituir a seção de diagnóstico por "Limitações Conhecidas e Riscos Remanescentes"
   - [x] Atualizar as bases de conhecimento OKF que citavam 15% / 85% como estado corrente
   - [x] Registrar ADR-006 e ADR-007
+
+---
+
+## Iteração de Reavaliação (pós-`c8f30d2`)
+
+Origem: reavaliação externa do commit `c8f30d2`, que aprovou o resultado técnico mas apontou
+oito riscos remanescentes e recomendou oito testes adicionais. Resultado desta iteração:
+Hit Rate@1 de 100%, 20/20 execuções corretas, zero execuções incorretas e a correção de uma
+falha de segurança que nenhuma das três guardas anteriores detectava. Detalhamento em
+[ADR-008](docs/adr/0008-guarda-de-direcao-leitura-escrita.md).
+
+- [x] **18. Separar aprovação no benchmark de prontidão para produção** (reavaliação §3.1)
+  - [x] `STATUS_APPROVED` passa a ser "APROVADO NO BENCHMARK DO MVP"
+  - [x] Novo campo `production_readiness`: `MVP_BENCHMARK_ONLY` / `NOT_APPROVED` / `INSUFFICIENT_EVIDENCE`
+  - [x] Ressalva textual obrigatória (`production_readiness_caveat`) impressa no relatório
+  - [x] Teste que falha se alguém ampliar o rótulo sem ampliar a evidência
+
+- [x] **19. Modelar o custo do fallback humano** (reavaliação §3.2)
+  - [x] `compute_fallback_economics`: economia líquida e ponto de equilíbrio
+  - [x] Ponto de equilíbrio é DERIVADO das medições e não depende de premissa de custo
+  - [x] `run_harness(human_fallback_cost_usd=...)` como parâmetro do chamador, não constante
+  - [x] Cenário de US$ 0,50/desvio em `run_case`, rotulado como premissa e não medição
+
+- [x] **20. Guarda de direção leitura/escrita** (reavaliação §3.4, §3.5 e §4.5)
+  - [x] Escrever o teste pedido em §4.5 — **falhou de imediato**: uma consulta resolvia
+        `atualizar_email` com margem 0.47, folgadamente acima do limiar de 0.25
+  - [x] Diagnosticar causa 1: capacidade sem glossário recebia `intent = 0` (score cortado pela metade)
+  - [x] Medir e REJEITAR a renormalização global (sucesso caía a 65%, 1 execução incorreta)
+  - [x] Declarar `consultar_email_vinculado_conta` e `consultar_endereco_cadastrado` como capacidades
+  - [x] Diagnosticar causa 2: 0.65 de diferença lexical é irrecuperável por ajuste de alpha
+  - [x] Declarar `mode` read/write por capacidade + léxicos `WRITE_VERBS` / `READ_MARKERS`
+  - [x] Descarte total de escrita em query de leitura; rebaixamento no caso inverso (assimetria deliberada)
+  - [x] Reescrever os glossários dos pares como verb-forward (invariante 7)
+
+- [x] **21. Contrato de `k` e da variante executável** (reavaliação §3.5 e §3.6)
+  - [x] `BaseToolRetriever.search` documenta que `k` são capacidades distintas, não linhas do registry
+  - [x] Documentar que um runtime real deve chamar `matched_variant`, não `name`
+  - [x] Teste que verifica o contrato de `matched_variant` em todos os resultados
+
+- [x] **22. Relatório versionado como snapshot identificado** (reavaliação §3.7)
+  - [x] Bloco `snapshot`: commit, `git_dirty`, timestamp UTC, seed, Python e versões de dependências
+  - [x] Aviso em `run_case` quando gerado sobre árvore suja
+  - [x] Teste de proveniência + teste que recomputa as decisões contra o código atual
+
+- [x] **23. Testes recomendados na reavaliação §4** (8 de 8)
+  - [x] Custo líquido com fallback humano e ponto de equilíbrio
+  - [x] Correspondência entre relatório versionado, commit e benchmark
+  - [x] Estabilidade do ranking após embaralhar a ordem do catálogo
+  - [x] Query composta apenas de palavras funcionais → abstenção
+  - [x] Colisão entre vocabulário de leitura e de escrita (nos dois sentidos)
+  - [x] Parametrização do limiar de margem (mesmo par, políticas diferentes)
+  - [x] Distinção entre capacidade canônica e variante executável
+  - [x] Distribuição de confiança do router (nem saturada, nem achatada)
+
+- [x] **24. Consistência da documentação** (reavaliação §3.8)
+  - [x] Badges: 23/23 → 71 testes; latência 95,0% → 92,6%; badge de execuções incorretas
+  - [x] README: "23 testes" nos scripts de demonstração → 71
+  - [x] Tabela de componentes e contagem no diagrama atualizadas
+  - [x] Limitações reescritas: cobertura da direção (59/285), folga de calibração (0.017),
+        guardas 2 e 3 não exercitadas pelo benchmark oficial
+  - [x] ADR-008 registrada e indexada

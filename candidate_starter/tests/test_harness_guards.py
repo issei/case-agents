@@ -48,9 +48,9 @@ ONE_QUERY = [{"query": "quero mexer na minha conta", "expected_route": "AGENT",
               "expected_tool": "tool_a"}]
 
 
-def _run(router, retriever, k=2):
+def _run(router, retriever, k=2, **kwargs):
     with mock.patch("candidate_starter.harness.mock_tool_execution") as executed:
-        report = run_harness(router, retriever, [], ONE_QUERY, k=k)
+        report = run_harness(router, retriever, [], ONE_QUERY, k=k, **kwargs)
     return report, executed
 
 
@@ -127,6 +127,29 @@ def test_single_candidate_has_no_margin_and_still_executes():
     assert report["rows"][0]["execution_status"] == "SUCCESS"
 
 
+def test_margin_threshold_is_a_tunable_policy_not_a_hardcoded_constant():
+    """A margem é política de risco, e política precisa ser exercitável.
+
+    O MESMO par de candidatos (margem 0.20) é executado sob um limiar permissivo e
+    bloqueado sob um limiar rígido. Se algum dia o limiar voltar a ser lido da constante
+    do módulo dentro do laço, este teste falha — que é o ponto.
+    """
+    retriever = _Retriever(
+        [ToolMatch(name="tool_a", score=0.50), ToolMatch(name="tool_b", score=0.40)]
+    )
+
+    permissive, executed = _run(_Router(0.99), retriever, min_relative_margin=0.10)
+    executed.assert_called_once()
+    assert permissive["rows"][0]["execution_status"] == "SUCCESS"
+
+    strict, blocked = _run(_Router(0.99), retriever, min_relative_margin=0.30)
+    blocked.assert_not_called()
+    assert strict["rows"][0]["execution_status"] == "AMBIGUOUS_CONFIRMATION"
+    assert strict["thresholds"]["min_relative_margin"] == 0.30, (
+        "O relatório precisa registrar sob qual política aquelas decisões foram tomadas"
+    )
+
+
 # ── Benchmark oficial: critérios de aceite ───────────────────────────────────
 
 @pytest.fixture(scope="module")
@@ -153,8 +176,16 @@ def test_official_benchmark_report_carries_the_full_metric_contract(official_rep
         "task_success_rate", "incorrect_execution_rate", "abstention_rate",
         "coverage_rate", "retrieval_hit_rate_at_1", "retrieval_hit_rate_at_k",
         "precision_at_k", "cost_savings_pct", "economics",
+        "production_readiness", "production_readiness_caveat", "thresholds",
     ):
         assert field in official_report, f"Campo obrigatório ausente do relatório: {field}"
+
+    for field in (
+        "cost_savings_pct_on_resolved", "deferred_to_human",
+        "human_handling_cost_usd", "human_fallback_breakeven_cost_usd",
+        "net_cost_savings_pct",
+    ):
+        assert field in official_report["economics"], f"Campo ausente de economics: {field}"
 
 
 def test_pipeline_decisions_are_reproducible():

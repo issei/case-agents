@@ -10,7 +10,8 @@ para um LLM caro com todas as tools no prompt.
 import random
 import time
 
-random.seed(42)
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
 
 # Custos aproximados em USD por operação
 COST_ROUTER_USD = 0.0000005          # classificador local, custo desprezível

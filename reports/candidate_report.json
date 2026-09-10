@@ -11,38 +11,49 @@
       "AGENT": 20
     }
   },
-  "retrieval_hit_rate_at_1": 0.95,
+  "retrieval_hit_rate_at_1": 1.0,
   "retrieval_hit_rate_at_k": 1.0,
   "precision_at_k": 1.0,
   "k": 2,
-  "task_success_rate": 0.95,
-  "coverage_rate": 0.95,
-  "correct_executions": 19,
+  "task_success_rate": 1.0,
+  "coverage_rate": 1.0,
+  "correct_executions": 20,
   "incorrect_executions": 0,
-  "abstentions": 1,
+  "abstentions": 0,
   "human_fallbacks": 0,
-  "ambiguous_confirmations": 1,
+  "ambiguous_confirmations": 0,
+  "thresholds": {
+    "router_confidence": 0.75,
+    "retriever_min_score": 0.1,
+    "min_relative_margin": 0.25,
+    "task_success_rate": 0.8
+  },
   "incorrect_execution_rate": 0.0,
-  "abstention_rate": 0.05,
-  "operational_status": "APROVADO PARA PRODUÇÃO",
+  "abstention_rate": 0.0,
+  "operational_status": "APROVADO NO BENCHMARK DO MVP",
   "production_approved": true,
+  "production_readiness": "MVP_BENCHMARK_ONLY",
+  "production_readiness_caveat": "Aprovação restrita ao benchmark do MVP. Fora do escopo desta evidência: dados de tráfego real, entradas adversariais, drift, fronteira de autorização, validação de parâmetros da operação, MFA, idempotência, auditoria operacional e validação independente da calibração.",
   "quality_gate_reasons": [],
   "smart_pipeline": {
-    "total_cost_usd": 0.19003499999999984,
-    "total_latency_ms": 189.74359997082502
+    "total_cost_usd": 0.20003499999999982,
+    "total_latency_ms": 262.763999751769
   },
   "baseline_always_llm": {
     "total_cost_usd": 0.9000000000000006,
-    "total_latency_ms": 2660.604700096883
+    "total_latency_ms": 2742.101900279522
   },
-  "cost_savings_pct": 78.88500000000003,
-  "latency_savings_pct": 92.86840318804535,
+  "cost_savings_pct": 77.77388888888892,
+  "latency_savings_pct": 90.41742395769525,
   "economics": {
-    "resolved_smart_cost_usd": 0.19003349999999983,
-    "resolved_baseline_cost_usd": 0.8700000000000006,
-    "cost_savings_pct_on_resolved": 78.15706896551727,
-    "deferred_to_human": 1,
-    "human_handling_cost_usd": null
+    "resolved_smart_cost_usd": 0.20003499999999982,
+    "resolved_baseline_cost_usd": 0.9000000000000006,
+    "cost_savings_pct_on_resolved": 77.77388888888892,
+    "deferred_to_human": 0,
+    "human_handling_cost_usd": 0.5,
+    "human_fallback_breakeven_cost_usd": null,
+    "net_smart_cost_usd": 0.20003499999999982,
+    "net_cost_savings_pct": 77.77388888888892
   },
   "rows": [
     {
@@ -51,19 +62,16 @@
       "predicted_route": "AGENT",
       "router_confidence": 0.9077496008639576,
       "retrieved_tools": [
-        "consultar_fatura",
-        "parcelar_fatura"
+        "consultar_fatura"
       ],
       "retrieved_scores": [
-        0.5457682628428444,
-        0.2120267654813121
+        0.5468507478092902
       ],
       "retrieved_variants": [
-        "consultar_valor_fatura_mes_atual",
-        "parcelar_valor_fatura_cartao"
+        "consultar_valor_fatura_mes_atual"
       ],
       "expected_tool": "consultar_fatura",
-      "relative_margin": 0.6115077040630964,
+      "relative_margin": null,
       "execution_status": "SUCCESS"
     },
     {
@@ -76,7 +84,7 @@
         "consultar_saldo_poupanca"
       ],
       "retrieved_scores": [
-        0.27059241238738796,
+        0.28453268497236894,
         0.1097588586359841
       ],
       "retrieved_variants": [
@@ -84,7 +92,7 @@
         null
       ],
       "expected_tool": "consultar_saldo",
-      "relative_margin": 0.5943756971320757,
+      "relative_margin": 0.6142486806159271,
       "execution_status": "SUCCESS"
     },
     {
@@ -103,7 +111,7 @@
         "alterar_endereco"
       ],
       "retrieved_scores": [
-        0.37903819131387617
+        0.36825180930971313
       ],
       "retrieved_variants": [
         "atualizar_cep_entrega"
@@ -122,15 +130,15 @@
         "consultar_limite_cartao"
       ],
       "retrieved_scores": [
-        0.5131396234946253,
-        0.14909528797424607
+        0.514341462069684,
+        0.15020817979034878
       ],
       "retrieved_variants": [
         "consultar_valor_disponivel_conta",
         "informar_limite_disponivel_cartao_credito"
       ],
       "expected_tool": "consultar_saldo",
-      "relative_margin": 0.7094449908996207,
+      "relative_margin": 0.707960195964139,
       "execution_status": "SUCCESS"
     },
     {
@@ -142,7 +150,7 @@
         "estornar_transacao"
       ],
       "retrieved_scores": [
-        0.41346887220811473
+        0.41380076477542593
       ],
       "retrieved_variants": [
         "contestar_compra_desconhecida"
@@ -161,15 +169,15 @@
         "bloquear_cartao"
       ],
       "retrieved_scores": [
-        0.4205724610992668,
-        0.1175086357200182
+        0.42033983787343726,
+        0.12129984610883364
       ],
       "retrieved_variants": [
         "reclamar_cobranca_errada_cartao_dinheiro_volta",
         null
       ],
       "expected_tool": "estornar_transacao",
-      "relative_margin": 0.7205983591676897,
+      "relative_margin": 0.7114243400708629,
       "execution_status": "SUCCESS"
     },
     {
@@ -181,7 +189,7 @@
         "consultar_fatura"
       ],
       "retrieved_scores": [
-        0.5565700373304237
+        0.5571809638564011
       ],
       "retrieved_variants": [
         "gerar_linha_digitavel_fatura"
@@ -200,7 +208,7 @@
         "consultar_limite_cartao_corporativo"
       ],
       "retrieved_scores": [
-        0.49930608425502016,
+        0.5013755339352004,
         0.14686532408774536
       ],
       "retrieved_variants": [
@@ -208,7 +216,7 @@
         null
       ],
       "expected_tool": "consultar_limite_cartao",
-      "relative_margin": 0.7058611366475277,
+      "relative_margin": 0.7070752078087505,
       "execution_status": "SUCCESS"
     },
     {
@@ -221,7 +229,7 @@
         "consultar_condicoes_parcelamento_fatura"
       ],
       "retrieved_scores": [
-        0.6405502324215868,
+        0.6406987777278574,
         0.24241451298817002
       ],
       "retrieved_variants": [
@@ -229,7 +237,7 @@
         null
       ],
       "expected_tool": "parcelar_fatura",
-      "relative_margin": 0.6215526890502764,
+      "relative_margin": 0.6216404316426872,
       "execution_status": "SUCCESS"
     },
     {
@@ -242,15 +250,15 @@
         "consultar_fatura"
       ],
       "retrieved_scores": [
-        0.4874361316935955,
-        0.14370583653746827
+        0.48760590794423697,
+        0.14485039438210517
       ],
       "retrieved_variants": [
         "parcelar_fatura_numero_vezes_escolhido",
         null
       ],
       "expected_tool": "parcelar_fatura",
-      "relative_margin": 0.7051801719372696,
+      "relative_margin": 0.7029355222687942,
       "execution_status": "SUCCESS"
     },
     {
@@ -263,7 +271,7 @@
         "confirmar_telefone_cadastrado"
       ],
       "retrieved_scores": [
-        0.6422609123593801,
+        0.640919072466323,
         0.252783093582129
       ],
       "retrieved_variants": [
@@ -271,7 +279,7 @@
         null
       ],
       "expected_tool": "alterar_telefone",
-      "relative_margin": 0.6064168179665228,
+      "relative_margin": 0.6055928050176546,
       "execution_status": "SUCCESS"
     },
     {
@@ -280,21 +288,20 @@
       "predicted_route": "AGENT",
       "router_confidence": 0.9571959987617837,
       "retrieved_tools": [
-        "consultar_email_vinculado_conta",
-        "atualizar_email"
+        "atualizar_email",
+        "atualizar_numero_whatsapp"
       ],
       "retrieved_scores": [
-        0.42285902976755574,
-        0.36057386985034623
+        0.3155915075502765,
+        0.11968028105217748
       ],
       "retrieved_variants": [
         null,
         null
       ],
       "expected_tool": "atualizar_email",
-      "relative_margin": 0.14729532901649864,
-      "execution_status": "AMBIGUOUS_CONFIRMATION",
-      "fallback_reason": "Margem relativa 0.147 < 0.25 entre 'consultar_email_vinculado_conta' e 'atualizar_email'. Confirmação do cliente requerida antes de executar."
+      "relative_margin": 0.6207747097468668,
+      "execution_status": "SUCCESS"
     },
     {
       "query": "Perdi meu cartão na rua, preciso bloquear agora",
@@ -306,15 +313,15 @@
         "solicitar_segunda_via_cartao"
       ],
       "retrieved_scores": [
-        0.32838150650074405,
-        0.10545934451268249
+        0.3307530412148567,
+        0.10908115517759591
       ],
       "retrieved_variants": [
         null,
         "solicitar_reemissao_cartao_danificado"
       ],
       "expected_tool": "bloquear_cartao",
-      "relative_margin": 0.6788511459233362,
+      "relative_margin": 0.6702036214786096,
       "execution_status": "SUCCESS"
     },
     {
@@ -327,7 +334,7 @@
         "confirmar_recebimento_cartao_novo"
       ],
       "retrieved_scores": [
-        0.5088796706818316,
+        0.5108814424307996,
         0.20867643236266986
       ],
       "retrieved_variants": [
@@ -335,7 +342,7 @@
         null
       ],
       "expected_tool": "desbloquear_cartao",
-      "relative_margin": 0.5899297134761328,
+      "relative_margin": 0.5915364798341922,
       "execution_status": "SUCCESS"
     },
     {
@@ -348,7 +355,7 @@
         "rastrear_segunda_via_cartao"
       ],
       "retrieved_scores": [
-        0.6558345462616866,
+        0.6567672513030447,
         0.19649852147245622
       ],
       "retrieved_variants": [
@@ -356,7 +363,7 @@
         null
       ],
       "expected_tool": "solicitar_segunda_via_cartao",
-      "relative_margin": 0.7003840029584981,
+      "relative_margin": 0.7008095012615235,
       "execution_status": "SUCCESS"
     },
     {
@@ -369,7 +376,7 @@
         "abrir_chamado_financeiro"
       ],
       "retrieved_scores": [
-        0.3575623885144421,
+        0.3575330570110114,
         0.14034406060114663
       ],
       "retrieved_variants": [
@@ -377,7 +384,7 @@
         null
       ],
       "expected_tool": "abrir_chamado_suporte",
-      "relative_margin": 0.6074976979982948,
+      "relative_margin": 0.6074654976677464,
       "execution_status": "SUCCESS"
     },
     {
@@ -446,7 +453,7 @@
         "consultar_saldo_poupanca"
       ],
       "retrieved_scores": [
-        0.4481390732119699,
+        0.4579224059515492,
         0.14280959310822988
       ],
       "retrieved_variants": [
@@ -454,7 +461,7 @@
         null
       ],
       "expected_tool": "consultar_saldo",
-      "relative_margin": 0.6813275127190686,
+      "relative_margin": 0.6881358255194441,
       "execution_status": "SUCCESS"
     },
     {
@@ -467,15 +474,15 @@
         "consultar_fatura"
       ],
       "retrieved_scores": [
-        0.35713638557327376,
-        0.1422149984789538
+        0.35714826207032085,
+        0.1430476853235003
       ],
       "retrieved_variants": [
         "registrar_compra_nao_reconhecida",
         null
       ],
       "expected_tool": "estornar_transacao",
-      "relative_margin": 0.6017907885507916,
+      "relative_margin": 0.5994725425953917,
       "execution_status": "SUCCESS"
     },
     {
@@ -487,7 +494,7 @@
         "consultar_fatura"
       ],
       "retrieved_scores": [
-        0.5830707130364854
+        0.5838395162530166
       ],
       "retrieved_variants": [
         "enviar_pdf_fatura_atual"
@@ -503,18 +510,18 @@
       "router_confidence": 0.840798222166294,
       "retrieved_tools": [
         "alterar_endereco",
-        "consultar_endereco_cadastrado"
+        "atualizar_email"
       ],
       "retrieved_scores": [
-        0.47908606970660383,
-        0.21369311663453544
+        0.48008594403923266,
+        0.12455125469946221
       ],
       "retrieved_variants": [
         null,
         null
       ],
       "expected_tool": "alterar_endereco",
-      "relative_margin": 0.5539567310621183,
+      "relative_margin": 0.7405646712929302,
       "execution_status": "SUCCESS"
     },
     {
@@ -524,5 +531,18 @@
       "router_confidence": 0.960414489991073,
       "execution_status": "RESOLVED_LOCAL"
     }
-  ]
+  ],
+  "snapshot": {
+    "generated_at_utc": "2026-09-10T04:38:35+00:00",
+    "git_commit": "c8f30d2dddd056ad76e5fedb97c1fea950f10b01",
+    "git_dirty": true,
+    "random_seed": 42,
+    "python_version": "3.12.0",
+    "dependencies": {
+      "scikit-learn": "1.9.0",
+      "numpy": "2.5.3",
+      "scipy": "1.18.1"
+    },
+    "note": "Snapshot de uma execução. Latência é simulada com sleep aleatório e varia entre execuções; custo e decisões são determinísticos para o mesmo commit."
+  }
 }
