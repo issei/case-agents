@@ -163,7 +163,7 @@ Este repositório documenta duas abordagens arquiteturais completas para o mesmo
         │  (Mission-Critical / SDD) │                     │  (Lean / Pragmatic)       │
         ├───────────────────────────┤                     ├───────────────────────────┤
         │ • Módulo taxonomy.py      │                     │ • Taxonomia no retriever  │
-        │ • 8 ADRs formalizados     │                     │ • Código enxuto / minimal │
+        │ • 9 ADRs formalizados     │                     │ • Código enxuto / minimal │
         │ • Manifesto APM.yml       │                     │ • Foco em entrega rápida  │
         │ • Harness com Quality Gate│                     │ • Testes unitários diretos│
         └───────────────────────────┘                     └───────────────────────────┘
@@ -175,49 +175,98 @@ Este repositório documenta duas abordagens arquiteturais completas para o mesmo
 |---|---|---|
 | **Filosofia Central** | Spec-Driven Development, Governança, Auditabilidade | Minimalismo, Baixa Fricção, Entrega Rápida de MVP |
 | **Estrutura de Código** | Modular: `taxonomy.py`, `router.py`, `retrieval.py`, `harness.py` desacoplados | Compacta: Regras de taxonomia e expansão embutidas diretamente no `retrieval.py` |
-| **Gestão de Decisões** | 8 ADRs formais ([`docs/adr/`](docs/adr/)) documentando motivações e descartes | Decisões expressas diretamente no código e em *commit messages* |
+| **Gestão de Decisões** | 9 ADRs formais ([`docs/adr/`](docs/adr/)) documentando motivações e descartes | Decisões expressas diretamente no código e em *commit messages* |
 | **Conformidade Enterprise** | Especificação [`APM.yml`](APM.yml) (PCI-DSS v4.0, LGPD, BACEN 4893) e Base OKF | Foco no cumprimento rigoroso do contrato do desafio |
 | **Manutenibilidade em Escala** | Alta em times grandes (mudanças de taxonomia não afetam lógica do retriever) | Alta em times pequenos (menos arquivos e abstrações para navegar) |
 | **Velocidade de Modificação** | Requer atualização de especificações e contratos de governança | Alteração direta no código com resposta imediata dos testes |
 
 ---
 
-## 5. Arquitetura para Produção de Alta Demanda
+## 5. Arquitetura para Produção de Alta Demanda (OmniRoute Gateway Pattern)
 
-Para evoluir o protótipo Python para um ambiente corporativo capaz de suportar **milhares de Requisições por Segundo (RPS)** com latência p99 previsível (sub-10ms), projetamos a arquitetura de desacoplamento entre Treinamento e Inferência (**OmniRoute Gateway Pattern**).
+Para transpor o protótipo Python para um ecossistema bancário corporativo capaz de processar **milhares de Requisições por Segundo (RPS)** com **latência p99 previsível (< 1–3 ms)** e zero dependência de runtime Python no caminho crítico, projetamos a **Arquitetura Multi-Linguagem com Desacoplamento Cold/Hot Path** ([ADR-009](docs/adr/0009-arquitetura-multi-linguagem-inferencia-alta-performance.md)).
+
+📄 **Documento Completo de Referência**: Consulte a [Proposta de Arquitetura Multi-Linguagem: Tool Routing & Retrieval de Alta Performance](docs/architecture/proposta-arquitetura-multi-linguagem.md) para a especificação detalhada de baixo nível.
 
 ```mermaid
 flowchart TD
-    subgraph Offline [Offline / Training Pipeline (Python 3.12)]
+    subgraph ColdPath [Cold Path: Treinamento & MLOps (Python 3.12 Offline/CI)]
         TD[Data: router_training & tools_registry] --> TR[Treinamento: scikit-learn]
         TR --> TF[TF-IDF Vectorizer + Platt Scaling]
-        TF --> EXP[Exportador de Artefatos]
-        EXP -->|Model Export| ONNX[Modelo Router .onnx]
+        TF --> EXP[Exportador Determinístico de Artefatos]
+        EXP -->|Model Export| ONNX[Modelo Router .onnx / Pesos Nativos]
         EXP -->|Vocab Export| VOC[Vocabulário & Pesos TF-IDF JSON/Protobuf]
-        EXP -->|Taxonomy Export| TAX[Taxonomia & Modos Read/Write JSON]
+        EXP -->|Matrix Export| DOCS[Matriz CSR Pré-computada de Docs]
+        EXP -->|Taxonomy Export| TAX[Taxonomia, Stopwords & Regras Read/Write]
     end
 
-    subgraph Online [Online / High-Throughput Inference Hot Path (Rust / Go)]
-        REQ[User Query Request] --> GW[OmniRoute Gateway - Rust/Go]
-        GW --> ONNX_RT[ONNX Runtime Engine]
-        ONNX_RT -->|Inferência < 1ms| ROUTE{Route Decision}
-
-        ROUTE -->|FAST_PATH| RESP[Resposta Local / Cache]
-        ROUTE -->|AGENT| RUST_RET[Rust TF-IDF Cosseno + Directed Guard]
-
-        RUST_RET -->|Filter Top-2 Tools| LLM[LLM Engine / Slot Filling]
+    subgraph HotPath [Hot Path: OmniRoute Gateway de Inferência (Rust / Go Online)]
+        REQ[Cliente / App Bancário] -->|gRPC / HTTPS mTLS| GW[OmniRoute Gateway - Stateless]
+        GW --> SEC[1. Auth mTLS/JWT + Rate Limiting]
+        SEC --> NORM[2. Normalização Canônica Unicode NFKD]
+        NORM --> ONNX_RT[3. Router: Projeção TF-IDF + Platt Sigmoid]
+        
+        ONNX_RT -->|Confiança >= 0.75| RUST_RET[4. Retriever: Cosseno Lexical 0.5 + Intent 0.5]
+        ONNX_RT -->|Confiança < 0.75| FP[Fast Path Local / Fallback Humano]
+        
+        RUST_RET --> GR{5. Guard Rails em Runtime}
+        GR -->|Score >= 0.10 & Margem >= 0.25 & Read==Read| PASS[Top-1 Tool Selecionada]
+        GR -->|Violação / Ambiguidade| CONF[Abstenção / Confirmação]
     end
 
-    ONNX -.->|Deploy / Hot Reload| ONNX_RT
-    VOC -.->|Load Memory Map| RUST_RET
-    TAX -.->|Load State| RUST_RET
+    ONNX -.->|Deploy / Hot-Reload| ONNX_RT
+    VOC -.->|Memory-Map| ONNX_RT
+    DOCS -.->|Matriz CSR em Memória| RUST_RET
+    TAX -.->|ArcSwap State| GR
+    PASS -->|Payload Enxuto < 2ms| LLM[LLM Engine: Slot Filling Apenas]
 ```
 
-### Por que desvincular Python do Hot Path de Inferência?
+### 5.1. Segregação Rígida: Cold Path vs. Hot Path
 
-1. **O Gargalo do GIL (Global Interpreter Lock)**: Em Python, a concorrência real em CPU no mesmo processo é limitada pelo GIL. Servidores ASGI/WSGI (como Uvicorn ou Gunicorn) exigem múltiplos processos pesados para escalar, consumindo gigabytes de memória RAM.
-2. **Ausência de Pausas de Garbage Collector**: Linguagens como Rust oferecem gerenciamento de memória sem Garbage Collector (GC). Em Go, o GC é otimizado para pausas sub-milissegundos. Isso elimina os *picos de latência no p99* causados por coleções de lixo sob carga pesada.
-3. **Portabilidade do Formato ONNX**: O Open Neural Network Exchange (ONNX) permite serializar modelos treinados em `scikit-learn` via `skl2onnx`. O modelo ONNX resultante é executado nativamente pelo `onnxruntime` compilado para C/C++/Rust, garantindo vetorização e multiplicação de matrizes otimizadas via instruções de vetorização de CPU (AVX-512 / Neon).
+* **Cold Path (Pesquisa, Treinamento e MLOps em Python 3.12)**:
+  - Responsável exclusivo por engenharia de features, treino com `scikit-learn`, calibração via `CalibratedClassifierCV` (Platt Scaling), validação cruzada, SHAP e testes adversariais.
+  - Exporta artefatos imutáveis versionados: grafo ONNX, vocabulário TF-IDF com pesos IDF, matriz esparsa CSR dos 285 documentos do catálogo e regras de normalização.
+  - **O runtime de produção nunca importa Python, numpy ou scikit-learn**.
+* **Hot Path (Gateway de Inferência em Rust ou Go)**:
+  - Ponto de entrada único via gRPC/HTTP-2 stateless com binário compilado nativo.
+  - Motor de inferência embutido (*in-process*), eliminando saltos de rede ou IPC. Executa normalização, vetorização TF-IDF, inferência linear, busca vetorial e guard rails inteiramente em memória RAM.
+
+### 5.2. Escolha da Stack Tecnológica: Rust vs. Go
+
+* **Rust (Recomendado Primário)**:
+  - **Zero Garbage Collection**: Ausência total de pausas de GC, assegurando latência p99 determinística e ultra-baixa (< 1–3 ms) sob carga extrema de concorrência.
+  - **Zero-Allocation Hot Path**: Utilização de pools de buffers e arenas (`tokio` async + `rayon`), eliminando alocações dinâmicas de heap por requisição.
+  - **Memory Safety Bancária**: Garantia em tempo de compilação contra data races e vazamentos de memória em ambientes regulados.
+  - **Binário Único**: Container `distroless` mínimo (~20 MB) com superfície de ataque reduzida.
+* **Go (Alternativa Secundária Viável)**:
+  - Opção pragmática caso a equipe já domine o ecossistema Go. Exige disciplina estrita de pooling (`sync.Pool`) para mitigar jitter do GC na manipulação de strings e vetores.
+
+### 5.3. Portabilidade do Modelo (O Gargalo Matemático)
+
+Por ser um classificador linear com calibração sigmoide, a portabilidade é simples e matematicamente exata:
+1. **Fase 1 (Adoção Rápida)**: Exportação via `skl2onnx` e inferência no Gateway através do `onnxruntime` oficial (crate `ort` em Rust). Risco de divergência zero.
+2. **Fase 2 (Ultra-Performance Nativa)**: Projeção esparsa de vocabulário via hash table estática (*Perfect Hash* / `phf`), produto escalar ($w^T x + b$) e aplicação direta da sigmoid de Platt em Rust puro. Latência de inferência < 50 microsegundos.
+3. **Retriever Pré-computado**: As 285 ferramentas têm seus vetores TF-IDF (Léxico e Glossário de Intenção) pré-computados e serializados em matriz esparsa CSR durante o build. O cálculo em runtime é uma multiplicação matriz-vetor esparsa paralela.
+
+### 5.4. Ciclo de Vida da Requisição (SLA: < 1–3 ms p99)
+
+```
+[Cliente / App] ──> (1) gRPC Request
+                ──> (2) Autenticação mTLS / JWT + Rate Limiting
+                ──> (3) Normalização Canônica (Unicode NFKD + Regex)
+                ──> (4) Vetorização TF-IDF Esparsa em Memória
+                ──> (5) Router: Inferência Linear + Platt Sigmoid (Confiança)
+                ──> (6) Guard Rail 1: Confiança >= 0.75?
+                ──> (7) Retriever: Cosseno Combinado (0.5*Lexical + 0.5*Intent) sobre Matriz CSR
+                ──> (8) Guard Rails 2, 3 e 4: Score >= 0.10, Margem >= 0.25 e Guarda Direcional (Read != Write)
+                ──> (9) Montagem do Payload de Decisão
+                ──> (10) Resposta de Baixa Latência (< 2ms) para o Orquestrador / Slot Filling
+```
+
+### 5.5. Pipeline MLOps e Deploy Zero-Downtime
+
+* **Testes de Paridade Automáticos**: A cada commit, a esteira de CI/CD roda 1.000 queries sintéticas e verifica paridade estrita entre o modelo Python e a engine Rust ($|\text{Score}_{\text{Python}} - \text{Score}_{\text{Rust}}| < 10^{-5}$).
+* **Hot-Reload de Catálogo**: Modificações no catálogo de ferramentas (descrições, sinônimos, categorização leitura/escrita) regeram a matriz de documentos sem retreinar o classificador, recarregando o estado em memória via `ArcSwap` sem reiniciar o Gateway.
 
 ---
 
@@ -250,6 +299,7 @@ Através da combinação disciplinada de **modelos lineares calibrados**, **recu
 ## 🏛️ Documentação Técnica e Referências de Arquitetura
 
 * [**Especificação Técnica Consolidada**](specification/Especificação.MD): Requisitos formais, contratos de API e invariantes do sistema.
+* [**Proposta de Arquitetura Multi-Linguagem: Tool Routing & Retrieval de Alta Performance**](docs/architecture/proposta-arquitetura-multi-linguagem.md): Documento técnico completo de arquitetura para produção (Cold vs. Hot Path, Rust/Go, ONNX, Matrizes CSR e MLOps).
 * [**Registros de Decisão de Arquitetura (ADRs)**](docs/adr/):
   * [ADR-001: Normalização Textual Canônica](docs/adr/0001-normalizacao-textual-canonica.md)
   * [ADR-002: Classificador Lexical para Query Routing](docs/adr/0002-classificador-lexical-query-routing.md)
@@ -259,4 +309,11 @@ Através da combinação disciplinada de **modelos lineares calibrados**, **recu
   * [ADR-006: Taxonomia de Capacidades e Colapso de Duplicatas](docs/adr/0006-taxonomia-de-capacidades-e-colapso-de-duplicatas.md)
   * [ADR-007: Calibração de Probabilidade e Guarda de Margem](docs/adr/0007-calibracao-de-probabilidade-e-guarda-de-margem.md)
   * [ADR-008: Guarda Direcional (Leitura vs Escrita)](docs/adr/0008-guarda-de-direcao-leitura-escrita.md)
+  * [ADR-009: Arquitetura Multi-Linguagem para Inferência de Alta Performance](docs/adr/0009-arquitetura-multi-linguagem-inferencia-alta-performance.md)
+* [**Base de Conhecimento Operacional (OKF Knowledge Base)**](docs/knowledge/):
+  * [Guia de Transição MVP para Produção (ISM v1.0)](docs/knowledge/kb-mvp-to-production.md)
+  * [Guia de Boas Práticas de Engenharia da Confiança](docs/knowledge/kb-trust-engineering.md)
+  * [Catálogo de Casos de Borda e Edge Cases](docs/knowledge/kb-edge-cases.md)
+  * [Guia de Eficiência de Tokens e Anti-Bloat](docs/knowledge/kb-token-efficiency.md)
 * [**Manifesto Enterprise Packaging (`APM.yml`)**](APM.yml): Mapeamento de compliance LGPD, PCI-DSS v4.0 e BACEN 4893.
+

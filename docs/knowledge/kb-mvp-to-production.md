@@ -21,8 +21,9 @@ A evolução do `case-agents` obedece aos quatro módulos do **Intentional Syste
 
 ### M2 · Arquitetar (Contratos e Determinismo)
 - No MVP: `QueryRouter` (TF-IDF + Logistic Regression), `ToolRetriever` com suporte a `min_score` para abstention e desempate determinístico, e Harness com contabilidade de taxa de acerto de execução.
-- Em Produção: Tabela de Aliases canônicos, busca híbrida (BM25 + Dense Embeddings), Reranker contextual, ACI com JSON Schema estrito, circuit breakers e política ativa de `HUMAN_FALLBACK`.
+- Em Produção: Tabela de Aliases canônicos, busca híbrida ponderada (Lexical + Intent), serialização matricial de documentos, ACI com JSON Schema estrito, circuit breakers e política ativa de `HUMAN_FALLBACK`.
 
 ### M3 · Orquestrar (Governança e Escala)
 - Integração declarativa via manifesto `APM.yml` (especificação alvo de governança empresarial).
+- **Arquitetura Multi-Linguagem (Cold vs Hot Path)**: Transição do pipeline Python de treinamento offline para o OmniRoute Gateway nativo em **Rust** (ou **Go**) no hot path de inferência, atingindo latência p99 < 1-3ms sem pausas de GC ([ADR-009](../adr/0009-arquitetura-multi-linguagem-inferencia-alta-performance.md) e [Proposta de Arquitetura Multi-Linguagem](../architecture/proposta-arquitetura-multi-linguagem.md)).
 - Traces distribuídos OpenTelemetry com correlação ponta a ponta e mascaramento estrito de dados sensíveis (LGPD/PCI-DSS).
