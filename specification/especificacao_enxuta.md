@@ -122,14 +122,9 @@ As abstenções devem ser contabilizadas no relatório (não inflar artificialme
 - 0 execuções incorretas no benchmark de queries transacionais
 - Economia de LLM líquida realista (~77–80%), sem inflar por abstenções indevidas
 
-## Plano de ação da branch
+## Plano de ação na branch feature/solucao-enxuta
 
-1. Criar a branch a partir da main limpa (starter):
-   ```bash
-   git checkout -b feature/solucao-enxuta
-   ```
-
-2. Implementar na ordem:
+1. Implementar na ordem:
    - `normalization.py`
    - `router.py` (com calibração)
    - `retrieval.py` (score combinado + colapso + direction guard)
